@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "mota-helper",
+  "version": "${version}",
+  "name": "魔塔助手",
+  "description": "魔塔自动化助手",
+  "authors": [
+    "example"
+  ],
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "com.example.client.ExampleModClient"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "fabric-api": "*",
+    "minecraft": "~1.21.1",
+    "java": ">=21"
+  }
+}
