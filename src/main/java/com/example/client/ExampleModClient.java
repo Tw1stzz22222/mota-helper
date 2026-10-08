@@ -55,6 +55,8 @@ public class ExampleModClient implements ClientModInitializer {
     // --- 玩家独立聊天悬浮框数据 ---
     private static final List<Text> playerChatHistory = Collections.synchronizedList(new ArrayList<>());
     private static final int MAX_PLAYER_CHAT_LINES = 7;
+    private static final List<Text> bossNoticeHistory = Collections.synchronizedList(new ArrayList<>());
+    private static final int MAX_BOSS_NOTICE_LINES = 7;
     private static boolean filterRewardMessages = true; // 是否开启 [仓库] 屏蔽
 
     public enum TargetFloor {
@@ -120,6 +122,7 @@ public class ExampleModClient implements ClientModInitializer {
 
         GOTO_11C_BOSS_CUSTOM("Wurst前往 11c Boss点"),
         WAIT_ARRIVE_11C_BOSS("到达 11c Boss点"),
+        WAIT_11C_BOSS_FIGHT("等待 11c Boss 击杀/结算"),
 
         GOTO_12C_BOSS_1("12c Boss 1 寻路"),
         WAIT_12C_BOSS_1_FIGHT("等待 12c Boss 1 击杀/结算"),
@@ -137,15 +140,23 @@ public class ExampleModClient implements ClientModInitializer {
         WAIT_ARRIVE_10C_2("等待触发 10c 传送方块"),
         GOTO_10C_BOSS("10c寻路 3"),
         WAIT_ARRIVE_10C_BOSS("到达 10c Boss点"),
+        WAIT_10C_BOSS_FIGHT("等待 10c Boss 击杀/结算"),
 
         GOTO_13C_BOSS("前往 13c Boss点"),
         WAIT_ARRIVE_13C_BOSS("到达 13c Boss点"),
+        WAIT_13C_BOSS_FIGHT("等待 13c Boss 击杀/结算"),
 
         GOTO_14C_DOOR("14c 导航至门口"),
         WAIT_14C_DOOR("14c 等待到达门口并缓冲(0.6s)"),
         FLY_14C_FORWARD_15TK("14c 正前方飞行15ticks"),
         FLY_14C_TO_BOSS_RISE_Y25("14c 斜向拉升至Y25并下探Boss点"),
-        WAIT_14C_BOSS_FIGHT("等待 14c Boss 击杀/结算");
+        WAIT_14C_BOSS_FIGHT("等待 14c Boss 击杀/结算"),
+
+        GOTO_15C_PART1("15c寻路 1"),
+        WAIT_ARRIVE_15C_1("等待到达 15c 第一段"),
+        GOTO_15C_PART2("15c寻路 2"),
+        WAIT_ARRIVE_15C_2("到达 15c Boss点"),
+        WAIT_15C_BOSS_FIGHT("等待 15c Boss 击杀/结算");
 
         private final String desc;
         AutoState(String desc) { this.desc = desc; }
@@ -172,8 +183,10 @@ public class ExampleModClient implements ClientModInitializer {
     private static int bossGotoRetryCount = 0;
     private static final int BOSS_GOTO_RETRY_LIMIT = 2;
     private static final int BOSS_GOTO_TIMEOUT = 400;
+    private static final int SINGLE_BOSS_FIGHT_TIMEOUT = 600;
     private static final double FLIGHT_HORIZONTAL_SPEED = 4.0;
     private static final double FLIGHT_VERTICAL_SPEED = 3.0;
+    private static final double ARRIVE_DISTANCE = 2.0;
     private static Object flightHackCache = null;
     private static Object horizontalSpeedSettingCache = null;
     private static Object verticalSpeedSettingCache = null;
@@ -201,6 +214,7 @@ public class ExampleModClient implements ClientModInitializer {
 
     private static boolean bossSpawnedByChat = false;
     private static boolean bossKilledByChat = false;
+    private static int bossKillCount = 0;
 
     private static final Vec3d BOSS_11C_POS = new Vec3d(-49.0, 7.0, -3.0);
 
@@ -218,6 +232,9 @@ public class ExampleModClient implements ClientModInitializer {
     private static final Vec3d DOOR_14C_POS = new Vec3d(-91.0, 12.0, -6.0);
     private static final Vec3d BOSS_14C_POS = new Vec3d(-207.0, 6.0, -159.0);
     private static int fly14cTickCount = 0;
+
+    private static final Vec3d POS_15C_1 = new Vec3d(-43.0, 14.0, 10.0);
+    private static final Vec3d BOSS_15C_POS = new Vec3d(-6.0, 14.0, -13.0);
 
     private static int lineCheckRetryCount = 0;
     private static final int MAX_LINE_RETRIES = 20;
@@ -277,6 +294,22 @@ public class ExampleModClient implements ClientModInitializer {
                currentState == AutoState.WAIT_RECONNECT_SUBMENU;
     }
 
+    private static boolean isInBossFightState() {
+        switch (currentState) {
+            case WAIT_10C_BOSS_FIGHT:
+            case WAIT_11C_BOSS_FIGHT:
+            case WAIT_12C_BOSS_1_FIGHT:
+            case WAIT_12C_BOSS_2_FIGHT:
+            case WAIT_12C_BOSS_3_FIGHT:
+            case WAIT_13C_BOSS_FIGHT:
+            case WAIT_14C_BOSS_FIGHT:
+            case WAIT_15C_BOSS_FIGHT:
+                return true;
+            default:
+                return false;
+        }
+    }
+
     public static void startFullAutomation(TargetFloor floor, String townLine, String copyLine, boolean enableAutoSwitch) {
         selectedFloor = floor;
         selectedTownLine = formatTownLineName(townLine);
@@ -305,6 +338,7 @@ public class ExampleModClient implements ClientModInitializer {
         fly14cTickCount = 0;
         bossSpawnedByChat = false;
         bossKilledByChat = false;
+        bossKillCount = 0;
 
         setFlightSpeeds();
 
@@ -445,6 +479,13 @@ public class ExampleModClient implements ClientModInitializer {
                 }
             }
 
+            if (cleanMsg.contains("5分钟内无人挑战头目将隐匿虚空")) {
+                bossNoticeHistory.add(text);
+                if (bossNoticeHistory.size() > MAX_BOSS_NOTICE_LINES) {
+                    bossNoticeHistory.remove(0);
+                }
+            }
+
             if (filterRewardMessages && (cleanMsg.contains("[仓库]") || cleanMsg.contains("获得了") || cleanMsg.contains("给予了"))) {
                 return false;
             }
@@ -463,12 +504,10 @@ public class ExampleModClient implements ClientModInitializer {
             if (cleanMsg.contains("出现在第十二层") || cleanMsg.contains("出现在第十四层")) {
                 bossSpawnedByChat = true;
             }
-            if (cleanMsg.contains("成功击杀")) {
-                if (currentState == AutoState.WAIT_12C_BOSS_1_FIGHT ||
-                    currentState == AutoState.WAIT_12C_BOSS_2_FIGHT ||
-                    currentState == AutoState.WAIT_12C_BOSS_3_FIGHT ||
-                    currentState == AutoState.WAIT_14C_BOSS_FIGHT) {
-                    bossKilledByChat = true;
+            if (cleanMsg.contains("成功击杀") && isInBossFightState()) {
+                bossKilledByChat = true;
+                if (currentState == AutoState.WAIT_13C_BOSS_FIGHT) {
+                    bossKillCount++;
                 }
             }
             if (cleanMsg.contains("请选择传送的子服") || cleanMsg.contains("连接已断开") || cleanMsg.contains("被踢出") || cleanMsg.contains("正在匹配") || cleanMsg.contains("登录大厅")) {
@@ -516,6 +555,24 @@ public class ExampleModClient implements ClientModInitializer {
                 for (int i = 0; i < playerChatHistory.size(); i++) {
                     Text msgText = playerChatHistory.get(i);
                     drawContext.drawTextWithShadow(client.textRenderer, msgText, chatX, chatY + 12 + (i * 10), 0xFFFFFF);
+                }
+            }
+
+            int bossNoticeWidth = 400;
+            int bossNoticeX = screenWidth - bossNoticeWidth - 5;
+            int bossNoticeY = chatY + chatHeight + 6;
+            int bossDisplayLines = bossNoticeHistory.isEmpty() ? 1 : bossNoticeHistory.size();
+            int bossNoticeHeight = 14 + bossDisplayLines * 10;
+
+            drawContext.fill(bossNoticeX - 4, bossNoticeY - 4, bossNoticeX + bossNoticeWidth, bossNoticeY + bossNoticeHeight, 160 << 24);
+            drawContext.drawTextWithShadow(client.textRenderer, Text.literal("§c§l💀 头目公告"), bossNoticeX, bossNoticeY, 0xFFFFFF);
+
+            if (bossNoticeHistory.isEmpty()) {
+                drawContext.drawTextWithShadow(client.textRenderer, Text.literal("§7(等待头目公告中...)"), bossNoticeX, bossNoticeY + 12, 0xFFFFFF);
+            } else {
+                for (int i = 0; i < bossNoticeHistory.size(); i++) {
+                    Text msgText = bossNoticeHistory.get(i);
+                    drawContext.drawTextWithShadow(client.textRenderer, msgText, bossNoticeX, bossNoticeY + 12 + (i * 10), 0xFFFFFF);
                 }
             }
         });
@@ -743,6 +800,10 @@ public class ExampleModClient implements ClientModInitializer {
                                 flightTimeoutTicks = 0; chatWaitTicks = 0; fly14cTickCount = 0;
                                 bossSpawnedByChat = false; bossKilledByChat = false;
                                 client.player.sendMessage(Text.literal("§a[魔塔助手] 已成功进入 14c " + selectedCopyLine + "！"), false);
+                            } else if (selectedFloor == TargetFloor.F15C) {
+                                delayTicks = 40; switchState(client, AutoState.GOTO_15C_PART1);
+                                flightTimeoutTicks = 0;
+                                client.player.sendMessage(Text.literal("§a[魔塔助手] 已成功进入 15c " + selectedCopyLine + "！"), false);
                             } else {
                                 switchState(client, AutoState.IDLE);
                             }
@@ -803,8 +864,7 @@ public class ExampleModClient implements ClientModInitializer {
 
                     boolean reachedTarget1 = executeThreeStageFlight(client, playerPos, TARGET_POS_1);
                     if (reachedTarget1) {
-                        double distToNav = playerPos.distanceTo(TARGET_POS_1);
-                        if (distToNav > 2.5 || playerPos.y > 187.5) {
+                        if (!isArrived(playerPos, TARGET_POS_1, ARRIVE_DISTANCE) || playerPos.y > 187.5) {
                             client.player.sendMessage(Text.literal(String.format("§e[魔塔助手] 检查坐标: 高度或位置未完全到位(Y=%.1f)，正在下探降高...", playerPos.y)), false);
                             navigateToTarget(client, playerPos, TARGET_POS_1);
                             return;
@@ -826,7 +886,7 @@ public class ExampleModClient implements ClientModInitializer {
                     flightTimeoutTicks++;
                     Vec3d nav = selectedFloor.getNavPos();
 
-                    if (playerPos.squaredDistanceTo(nav) < 9.0 || flightTimeoutTicks > 200) {
+                    if (isArrived(playerPos, nav, ARRIVE_DISTANCE) || flightTimeoutTicks > 200) {
                         switchState(client, AutoState.GOTO_POINT2_SECOND);
                         flightTimeoutTicks = 0;
                     }
@@ -841,7 +901,7 @@ public class ExampleModClient implements ClientModInitializer {
                     flightTimeoutTicks++;
                     Vec3d nav = selectedFloor.getNavPos();
 
-                    if (playerPos.squaredDistanceTo(nav) < 4.0 || flightTimeoutTicks > 150) {
+                    if (isArrived(playerPos, nav, ARRIVE_DISTANCE) || flightTimeoutTicks > 150) {
                         switchState(client, AutoState.WAIT_BEFORE_SIGN_CLICK);
                         signWaitTicks = 12;
                         flightTimeoutTicks = 0;
@@ -933,7 +993,10 @@ public class ExampleModClient implements ClientModInitializer {
                     flightTimeoutTicks = 0;
                 }
                 else if (currentState == AutoState.WAIT_ARRIVE_11C_BOSS) {
-                    handleBossGotoArrival(client, playerPos, BOSS_11C_POS, AutoState.IDLE, "goto -49 7 -3", 0);
+                    handleBossGotoArrival(client, playerPos, BOSS_11C_POS, AutoState.WAIT_11C_BOSS_FIGHT, "goto -49 7 -3", 0);
+                }
+                else if (currentState == AutoState.WAIT_11C_BOSS_FIGHT) {
+                    handleSingleBossFightWait(client, "11c");
                 }
                 else if (currentState == AutoState.GOTO_12C_BOSS_1) {
                     handleBossNavigation(client, playerPos, BOSS_12C_1_POS, AutoState.WAIT_12C_BOSS_1_FIGHT);
@@ -949,7 +1012,7 @@ public class ExampleModClient implements ClientModInitializer {
                 }
                 else if (currentState == AutoState.GOTO_12C_BOSS_3_HIGH) {
                     flightTimeoutTicks++;
-                    if (flightTimeoutTicks > 400 || navigateVerticalFirst(client, playerPos, BOSS_12C_3_HIGH_POS, 2.5)) {
+                    if (flightTimeoutTicks > 400 || navigateVerticalFirst(client, playerPos, BOSS_12C_3_HIGH_POS)) {
                         switchState(client, AutoState.GOTO_12C_BOSS_3_DOWN);
                         flightTimeoutTicks = 0;
                     }
@@ -993,7 +1056,10 @@ public class ExampleModClient implements ClientModInitializer {
                     switchState(client, AutoState.WAIT_ARRIVE_10C_BOSS);
                 }
                 else if (currentState == AutoState.WAIT_ARRIVE_10C_BOSS) {
-                    handleBossGotoArrival(client, playerPos, BOSS_10C_POS, AutoState.IDLE, "goto -110 211 -185", 0);
+                    handleBossGotoArrival(client, playerPos, BOSS_10C_POS, AutoState.WAIT_10C_BOSS_FIGHT, "goto -110 211 -185", 0);
+                }
+                else if (currentState == AutoState.WAIT_10C_BOSS_FIGHT) {
+                    handleSingleBossFightWait(client, "10c");
                 }
                 else if (currentState == AutoState.GOTO_13C_BOSS) {
                     executeWurstCommandDirectly("goto 43 19 32");
@@ -1001,7 +1067,19 @@ public class ExampleModClient implements ClientModInitializer {
                     flightTimeoutTicks = 0;
                 }
                 else if (currentState == AutoState.WAIT_ARRIVE_13C_BOSS) {
-                    handleBossGotoArrival(client, playerPos, BOSS_13C_POS, AutoState.IDLE, "goto 43 19 32", 0);
+                    handleBossGotoArrival(client, playerPos, BOSS_13C_POS, AutoState.WAIT_13C_BOSS_FIGHT, "goto 43 19 32", 0);
+                }
+                else if (currentState == AutoState.WAIT_13C_BOSS_FIGHT) {
+                    chatWaitTicks++;
+                    // 13c 为 1 Boss + 1 小怪：需累计两次"成功击杀"才结算
+                    if (bossKillCount >= 2 || chatWaitTicks > SINGLE_BOSS_FIGHT_TIMEOUT) {
+                        client.player.sendMessage(Text.literal("§a[魔塔助手] 13c " + selectedCopyLine + (bossKillCount >= 2 ? " Boss与小怪已被击杀！" : " 触发30秒超时！") + " 自动切换下一路线..."), false);
+                        bossSpawnedByChat = false;
+                        bossKilledByChat = false;
+                        bossKillCount = 0;
+                        chatWaitTicks = 0;
+                        skipCurrentAndAdvanceNext(client);
+                    }
                 }
                 else if (currentState == AutoState.GOTO_14C_DOOR) {
                     executeWurstCommandDirectly("goto -91 12 -6");
@@ -1010,7 +1088,7 @@ public class ExampleModClient implements ClientModInitializer {
                 }
                 else if (currentState == AutoState.WAIT_14C_DOOR) {
                     flightTimeoutTicks++;
-                    if (playerPos.squaredDistanceTo(DOOR_14C_POS) < 9.0 || flightTimeoutTicks > 200) {
+                    if (isArrived(playerPos, DOOR_14C_POS, ARRIVE_DISTANCE) || flightTimeoutTicks > 200) {
                         resetFlightKeys(client);
                         delayTicks = 12;
                         switchState(client, AutoState.FLY_14C_FORWARD_15TK);
@@ -1093,8 +1171,8 @@ public class ExampleModClient implements ClientModInitializer {
                         }
                     }
 
-                    boolean arrived = playerPos.distanceTo(BOSS_14C_POS) < 3.0 ||
-                                      (horizDist < 2.5 && Math.abs(playerPos.y - BOSS_14C_POS.y) < 3.0);
+                    boolean arrived = isArrived(playerPos, BOSS_14C_POS, ARRIVE_DISTANCE) ||
+                                      (horizDist < ARRIVE_DISTANCE && Math.abs(playerPos.y - BOSS_14C_POS.y) < ARRIVE_DISTANCE);
 
                     if (arrived || flightTimeoutTicks > 400) {
                         resetFlightKeys(client);
@@ -1105,14 +1183,25 @@ public class ExampleModClient implements ClientModInitializer {
                     }
                 }
                 else if (currentState == AutoState.WAIT_14C_BOSS_FIGHT) {
-                    chatWaitTicks++;
-                    if (bossKilledByChat || chatWaitTicks > 600) {
-                        client.player.sendMessage(Text.literal("§a[魔塔助手] 14c " + selectedCopyLine + (bossKilledByChat ? " Boss已被击杀！" : " 触发30秒预防超时！") + " 自动切换下一路线..."), false);
-                        bossSpawnedByChat = false;
-                        bossKilledByChat = false;
-                        chatWaitTicks = 0;
-                        skipCurrentAndAdvanceNext(client);
-                    }
+                    handleSingleBossFightWait(client, "14c");
+                }
+                else if (currentState == AutoState.GOTO_15C_PART1) {
+                    executeWurstCommandDirectly("goto -43 14 10");
+                    switchState(client, AutoState.WAIT_ARRIVE_15C_1);
+                    flightTimeoutTicks = 0;
+                }
+                else if (currentState == AutoState.WAIT_ARRIVE_15C_1) {
+                    handleBossGotoArrival(client, playerPos, POS_15C_1, AutoState.GOTO_15C_PART2, "goto -43 14 10", 5);
+                }
+                else if (currentState == AutoState.GOTO_15C_PART2) {
+                    executeWurstCommandDirectly("goto -6 14 -13");
+                    switchState(client, AutoState.WAIT_ARRIVE_15C_2);
+                }
+                else if (currentState == AutoState.WAIT_ARRIVE_15C_2) {
+                    handleBossGotoArrival(client, playerPos, BOSS_15C_POS, AutoState.WAIT_15C_BOSS_FIGHT, "goto -6 14 -13", 0);
+                }
+                else if (currentState == AutoState.WAIT_15C_BOSS_FIGHT) {
+                    handleSingleBossFightWait(client, "15c");
                 }
             }
         });
@@ -1135,9 +1224,13 @@ public class ExampleModClient implements ClientModInitializer {
 
     private static void handleBossGotoArrival(MinecraftClient client, Vec3d playerPos, Vec3d target, AutoState nextState, String gotoCommand, int arriveDelay) {
         flightTimeoutTicks++;
-        if (playerPos.squaredDistanceTo(target) < 6.25) {
+        if (isArrived(playerPos, target, ARRIVE_DISTANCE)) {
             flightTimeoutTicks = 0;
             bossGotoRetryCount = 0;
+            chatWaitTicks = 0;
+            bossSpawnedByChat = false;
+            bossKilledByChat = false;
+            bossKillCount = 0;
             switchState(client, nextState);
             delayTicks = arriveDelay;
             return;
@@ -1177,6 +1270,17 @@ public class ExampleModClient implements ClientModInitializer {
         }
     }
 
+    private static void handleSingleBossFightWait(MinecraftClient client, String floorLabel) {
+        chatWaitTicks++;
+        if (bossKilledByChat || chatWaitTicks > SINGLE_BOSS_FIGHT_TIMEOUT) {
+            client.player.sendMessage(Text.literal("§a[魔塔助手] " + floorLabel + " " + selectedCopyLine + (bossKilledByChat ? " Boss已被击杀！" : " 触发30秒超时！") + " 自动切换下一路线..."), false);
+            bossSpawnedByChat = false;
+            bossKilledByChat = false;
+            chatWaitTicks = 0;
+            skipCurrentAndAdvanceNext(client);
+        }
+    }
+
     private static void skipCurrentAndAdvanceNext(MinecraftClient client) {
         int copyIndex = COPY_LINES_12C.indexOf(selectedCopyLine);
 
@@ -1198,8 +1302,8 @@ public class ExampleModClient implements ClientModInitializer {
         startMenuSequence();
     }
 
-    private static boolean navigateVerticalFirst(MinecraftClient client, Vec3d playerPos, Vec3d target, double tolerance) {
-        if (playerPos.distanceTo(target) < tolerance) {
+    private static boolean navigateVerticalFirst(MinecraftClient client, Vec3d playerPos, Vec3d target) {
+        if (isArrived(playerPos, target, ARRIVE_DISTANCE)) {
             resetFlightKeys(client);
             return true;
         }
@@ -1290,7 +1394,7 @@ public class ExampleModClient implements ClientModInitializer {
         }
 
         if (subFlightStage == 3) {
-            if (playerPos.distanceTo(targetPos) < 2.0) {
+            if (isArrived(playerPos, targetPos, ARRIVE_DISTANCE)) {
                 resetFlightKeys(client);
                 subFlightStage = 1;
                 return true;
@@ -1304,8 +1408,7 @@ public class ExampleModClient implements ClientModInitializer {
     }
 
     private static boolean navigateDirectToTarget(MinecraftClient client, Vec3d playerPos, Vec3d target) {
-        double dist = playerPos.distanceTo(target);
-        if (dist < 1.8) {
+        if (isArrived(playerPos, target, ARRIVE_DISTANCE)) {
             resetFlightKeys(client);
             return true;
         }
@@ -1373,6 +1476,10 @@ public class ExampleModClient implements ClientModInitializer {
             client.player.input.jumping = false;
             client.player.input.sneaking = false;
         }
+    }
+
+    private static boolean isArrived(Vec3d pos, Vec3d target, double threshold) {
+        return pos.squaredDistanceTo(target) < threshold * threshold;
     }
 
     private static boolean isLineEmpty(ItemStack stack, MinecraftClient client) {
