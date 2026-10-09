@@ -1547,7 +1547,7 @@ public class ExampleModClient implements ClientModInitializer {
             initCheckOrderList();
         }
 
-        if (!autoSwitchLine || selectedCopyLine.equals("一线")) {
+        if (!autoSwitchLine) {
             String targetKeyword = getCurrentKeywordString();
             for (int i = 0; i < handler.slots.size(); i++) {
                 ItemStack stack = handler.getSlot(i).getStack();
@@ -1657,9 +1657,11 @@ public class ExampleModClient implements ClientModInitializer {
         currentCheckOrder.clear();
         String floorPrefix = "传送" + selectedFloor.getFloorNameCN() + "一线";
 
-        if (!autoSwitchLine || selectedCopyLine.equals("一线")) return;
+        if (!autoSwitchLine) return;
 
-        if (selectedCopyLine.equals("A1")) {
+        if (selectedCopyLine.equals("一线")) {
+            currentCheckOrder.addAll(Arrays.asList(floorPrefix, floorPrefix + "A1", floorPrefix + "A2", floorPrefix + "A3"));
+        } else if (selectedCopyLine.equals("A1")) {
             currentCheckOrder.addAll(Arrays.asList(floorPrefix + "A1", floorPrefix + "A2", floorPrefix + "A3"));
         } else if (selectedCopyLine.equals("A2")) {
             currentCheckOrder.addAll(Arrays.asList(floorPrefix + "A2", floorPrefix + "A1", floorPrefix + "A3"));
