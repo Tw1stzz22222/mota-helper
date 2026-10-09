@@ -12,6 +12,7 @@ public class FloorSelectScreen extends Screen {
     private boolean autoSwitch = true;
     private boolean cycleDelayEnabled = false;
     private int cycleDelaySeconds = 30;
+    private int abyssMaxCycles = 0;
 
     private static final ExampleModClient.TargetFloor[] FLOORS = ExampleModClient.TargetFloor.values();
     private static final String[] TOWNS = {
@@ -83,9 +84,35 @@ public class FloorSelectScreen extends Screen {
                 .build());
 
         addDrawableChild(ButtonWidget.builder(
+                        Text.literal("深渊挑战次数: " + (abyssMaxCycles == 0 ? "§e无限" : "§b" + abyssMaxCycles)),
+                        b -> { abyssMaxCycles = nextCycles(abyssMaxCycles); this.clearAndInit(); })
+                .dimensions(cx - 100, y + 224, 200, 20)
+                .build());
+
+        addDrawableChild(ButtonWidget.builder(
+                        Text.literal("§a§l开始深渊挑战"),
+                        b -> { ExampleModClient.startAbyssChallenge(abyssMaxCycles); this.close(); })
+                .dimensions(cx - 100, y + 248, 200, 20)
+                .build());
+
+        addDrawableChild(ButtonWidget.builder(
+                        Text.literal("§a§l开始深渊奖励"),
+                        b -> { ExampleModClient.startAbyssReward(); this.close(); })
+                .dimensions(cx - 100, y + 272, 200, 20)
+                .build());
+
+        addDrawableChild(ButtonWidget.builder(
                         Text.literal("§7取消"),
                         b -> this.close())
-                .dimensions(cx - 100, y + 200, 200, 20)
+                .dimensions(cx - 100, y + 296, 200, 20)
                 .build());
+    }
+
+    private int nextCycles(int current) {
+        if (current == 0) return 10;
+        if (current == 10) return 50;
+        if (current == 50) return 100;
+        if (current == 100) return 500;
+        return 0;
     }
 }
