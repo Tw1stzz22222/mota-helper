@@ -15,6 +15,7 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.screen.ChatScreen;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
+import net.minecraft.entity.Entity;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.tooltip.TooltipType;
@@ -155,7 +156,33 @@ public class ExampleModClient implements ClientModInitializer {
         WAIT_ARRIVE_15C_1("等待到达 15c 第一段"),
         GOTO_15C_PART2("15c寻路 2"),
         WAIT_ARRIVE_15C_2("到达 15c Boss点"),
-        WAIT_15C_BOSS_FIGHT("等待 15c Boss 击杀/结算");
+        WAIT_15C_BOSS_FIGHT("等待 15c Boss 击杀/结算"),
+
+        // --- 深渊挑战 / 深渊奖励自动化 ---
+        ABYSS_WAIT_MAIN_MENU("深渊-等待主菜单"),
+        ABYSS_WAIT_FUNC_MENU("深渊-等待功能性菜单"),
+        ABYSS_WAIT_ABYSS_MENU("深渊-等待深渊与矿坑菜单"),
+        ABYSS_TELEPORT_WAIT("深渊-等待传送到深渊"),
+        ABYSS_GOTO_NPC("深渊-飞行前往NPC(0,64,-1)"),
+        ABYSS_CLICK_NPC("深渊-右键NPC"),
+        ABYSS_WAIT_NPC_MENU("深渊-等待NPC菜单"),
+
+        ABYSS_CH_CLICK_START("深渊挑战-点击开始挑战"),
+        ABYSS_CH_CLICK_START_NOW("深渊挑战-点击现在开始挑战"),
+        ABYSS_CH_ENTER_SCENE("深渊挑战-等待进入场景"),
+        ABYSS_CH_WALK_1("深渊挑战-走路前往(8,20,5)"),
+        ABYSS_CH_WALK_2("深渊挑战-走路前往(8,20,15)"),
+        ABYSS_CH_FLY_1("深渊挑战-飞行前往(8,20,4)"),
+        ABYSS_CH_BREAK_GLASS("深渊挑战-击碎头顶玻璃"),
+        ABYSS_CH_FLY_2("深渊挑战-飞行前往(8,20,22)"),
+        ABYSS_CH_FIGHT_WAIT("深渊挑战-等待战斗结束"),
+        ABYSS_CH_INTERVAL("深渊挑战-轮次间隔"),
+
+        ABYSS_RW_CLICK_REWARD("深渊奖励-点击奖励领取"),
+        ABYSS_RW_SCAN("深渊奖励-扫描目标数字"),
+        ABYSS_RW_CLOSE_RETRY("深渊奖励-关闭菜单重试"),
+        ABYSS_RW_NEXT_PAGE("深渊奖励-翻下一页"),
+        ABYSS_RW_STEAL("深渊奖励-调用Steal领取");
 
         private final String desc;
         AutoState(String desc) { this.desc = desc; }
@@ -163,6 +190,20 @@ public class ExampleModClient implements ClientModInitializer {
     }
 
     private static AutoState currentState = AutoState.IDLE;
+
+    // --- 深渊自动化状态 ---
+    private static boolean abyssMode = false;
+    private static boolean abyssRewardMode = false;
+    private static int abyssMaxCycles = 0;      // 0 = 无限循环
+    private static int abyssCurrentCycle = 0;
+    private static int abyssStepTick = 0;
+    private static int abyssSubStep = 0;
+    private static boolean abyssFightEnded = false;
+    private static int rewardN = 1;
+    private static int rewardTargetNumber = 25;
+    private static boolean abyssRewardTerminate = false;
+    private static int abyssMenuWaitTick = 0;
+    private static int rewardPageIndex = 0;
 
     private static TargetFloor selectedFloor = TargetFloor.F10C;
     private static String selectedTownLine = "魔塔一区";
@@ -255,6 +296,17 @@ public class ExampleModClient implements ClientModInitializer {
             "魔塔一区", "魔塔二线", "魔塔三线", "魔塔四线", "魔塔五线",
             "魔塔六线", "魔塔七线", "魔塔八线", "魔塔九线", "魔塔十线"
     );
+
+    // --- 深渊自动化坐标与常量 ---
+    private static final Vec3d ABYSS_NPC_POS = new Vec3d(0, 64, -1);
+    private static final Vec3d ABYSS_CH_POS_1 = new Vec3d(8, 20, 5);
+    private static final Vec3d ABYSS_CH_POS_2 = new Vec3d(8, 20, 15);
+    private static final Vec3d ABYSS_CH_POS_3 = new Vec3d(8, 20, 4);
+    private static final Vec3d ABYSS_CH_POS_4 = new Vec3d(8, 20, 22);
+    private static final int ABYSS_CH_INTERVAL_SECONDS = 10;
+    private static final double ABYSS_ARRIVE_DIST = 2.5;
+    private static final int ABYSS_GOTO_TIMEOUT = 300;
+    private static final int ABYSS_MENU_TIMEOUT = 200;
 
     private static Object wurstCmdProcessorCache = null;
     private static Method wurstProcessMethodCache = null;
@@ -485,6 +537,13 @@ public class ExampleModClient implements ClientModInitializer {
                 }
             }
 
+            if (abyssMode && !abyssRewardMode && (cleanMsg.contains("挑战失败了") || cleanMsg.contains("5秒后自动离开"))) {
+                abyssFightEnded = true;
+            }
+            if (abyssRewardMode && cleanMsg.contains("你还未挑战成功该层数")) {
+                abyssRewardTerminate = true;
+            }
+
             if (cleanMsg.contains("出现在第十二层") || cleanMsg.contains("出现在第十四层")) {
                 bossSpawnedByChat = true;
             }
@@ -568,15 +627,21 @@ public class ExampleModClient implements ClientModInitializer {
             client.options.pauseOnLostFocus = false;
 
             while (testKeyBinding.wasPressed()) {
+                if (abyssMode) continue;
                 client.setScreen(new FloorSelectScreen());
             }
 
             while (stopKeyBinding.wasPressed()) {
+                abyssMode = false;
+                abyssRewardMode = false;
+                abyssRewardTerminate = false;
+                abyssFightEnded = false;
                 switchState(client, AutoState.IDLE);
                 client.player.sendMessage(Text.literal("§c[魔塔助手] 收到 '=' 键信号，程序已彻底强制停止！"), false);
             }
 
             while (pauseOrNextKeyBinding.wasPressed()) {
+                if (abyssMode) continue;
                 if (currentState != AutoState.PAUSED && currentState != AutoState.IDLE) {
                     switchState(client, AutoState.PAUSED);
                     client.player.sendMessage(Text.literal("§e[魔塔助手] 当前流程已暂停。再次按下 '-' 键将直接跳过当前，跳转并开始下一个循环！"), false);
@@ -587,6 +652,11 @@ public class ExampleModClient implements ClientModInitializer {
             }
 
             if (currentState == AutoState.PAUSED || currentState == AutoState.IDLE) return;
+
+            if (abyssMode) {
+                handleAbyssTick(client);
+                return;
+            }
 
             if (currentState == AutoState.WAIT_CYCLE_DELAY) {
                 cycleDelayTicks--;
@@ -1754,5 +1824,444 @@ public class ExampleModClient implements ClientModInitializer {
     private static String extractLineNumber(String townLineStr) {
         if (townLineStr == null) return "";
         return townLineStr.replaceAll("[魔塔传送服务器线区]", "").trim();
+    }
+
+    // ============================================================
+    // 深渊自动化（挑战 / 奖励）
+    // ============================================================
+
+    /** 启动深渊挑战自动化，maxCycles=0 表示无限循环。 */
+    public static void startAbyssChallenge(int maxCycles) {
+        abyssMode = true;
+        abyssRewardMode = false;
+        abyssMaxCycles = Math.max(0, maxCycles);
+        abyssCurrentCycle = 0;
+        abyssFightEnded = false;
+        abyssRewardTerminate = false;
+        startAbyssCommon();
+    }
+
+    /** 启动深渊奖励自动化。 */
+    public static void startAbyssReward() {
+        abyssMode = true;
+        abyssRewardMode = true;
+        rewardN = 1;
+        rewardTargetNumber = 25;
+        rewardPageIndex = 0;
+        abyssRewardTerminate = false;
+        abyssFightEnded = false;
+        startAbyssCommon();
+    }
+
+    private static void startAbyssCommon() {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player == null) return;
+        abyssStepTick = 0;
+        abyssSubStep = 0;
+        abyssMenuWaitTick = 0;
+        setFlightSpeeds();
+        if (client.currentScreen != null) client.setScreen(null);
+        abyssTo(client, AutoState.ABYSS_WAIT_MAIN_MENU);
+        client.player.networkHandler.sendChatMessage("/menu");
+    }
+
+    private static void abyssTo(MinecraftClient client, AutoState state) {
+        abyssStepTick = 0;
+        abyssSubStep = 0;
+        switchState(client, state);
+    }
+
+    private static boolean isAbyssState() {
+        return currentState.name().startsWith("ABYSS");
+    }
+
+    /** 深渊主 tick，由主循环在 abyssMode 为 true 时调用。 */
+    private static void handleAbyssTick(MinecraftClient client) {
+        if (client.player == null || client.world == null) return;
+
+        // 防踢等外部逻辑可能把状态切到非深渊状态，此时停止深渊避免卡死
+        if (!isAbyssState()) {
+            abyssStopAll(client);
+            return;
+        }
+
+        // 奖励终止条件：聊天收到「你还未挑战成功该层数」立即停止
+        if (abyssRewardTerminate) {
+            abyssStopAll(client);
+            return;
+        }
+
+        ScreenHandler handler = client.player.currentScreenHandler;
+        Vec3d playerPos = client.player.getPos();
+
+        switch (currentState) {
+            // ---------- 共用前置：主菜单 -> 功能性 -> 深渊与矿坑 -> 传送到深渊 ----------
+            case ABYSS_WAIT_MAIN_MENU:
+                if (handler != null && clickSlotByKeyword(handler, client, "功能性")) {
+                    abyssTo(client, AutoState.ABYSS_WAIT_FUNC_MENU);
+                } else if (abyssStepTick++ > ABYSS_MENU_TIMEOUT) {
+                    abyssStepTick = 0;
+                    client.player.networkHandler.sendChatMessage("/menu");
+                }
+                break;
+
+            case ABYSS_WAIT_FUNC_MENU:
+                if (handler != null && (clickSlotByKeyword(handler, client, "深渊与矿坑") || clickSlotByKeyword(handler, client, "深渊"))) {
+                    abyssTo(client, AutoState.ABYSS_WAIT_ABYSS_MENU);
+                } else if (abyssStepTick++ > ABYSS_MENU_TIMEOUT) {
+                    abyssStepTick = 0;
+                    client.player.networkHandler.sendChatMessage("/menu");
+                }
+                break;
+
+            case ABYSS_WAIT_ABYSS_MENU:
+                if (handler != null && (clickSlotByKeyword(handler, client, "传送到深渊") || clickSlotByKeyword(handler, client, "传送"))) {
+                    abyssTo(client, AutoState.ABYSS_TELEPORT_WAIT);
+                } else if (abyssStepTick++ > ABYSS_MENU_TIMEOUT) {
+                    abyssStepTick = 0;
+                    client.player.networkHandler.sendChatMessage("/menu");
+                }
+                break;
+
+            case ABYSS_TELEPORT_WAIT:
+                // 等待世界切换加载完毕（菜单关闭 + 缓冲）
+                abyssStepTick++;
+                if (!isMenuOpen(client) && abyssStepTick > 60) {
+                    abyssTo(client, AutoState.ABYSS_GOTO_NPC);
+                }
+                break;
+
+            case ABYSS_GOTO_NPC:
+                handleAbyssMove(client, ABYSS_NPC_POS, true, AutoState.ABYSS_CLICK_NPC);
+                break;
+
+            case ABYSS_CLICK_NPC:
+                clickAbyssNpc(client);
+                abyssMenuWaitTick = 0;
+                abyssTo(client, AutoState.ABYSS_WAIT_NPC_MENU);
+                break;
+
+            case ABYSS_WAIT_NPC_MENU:
+                if (isMenuOpen(client)) {
+                    abyssMenuWaitTick = 0;
+                    abyssTo(client, abyssRewardMode ? AutoState.ABYSS_RW_CLICK_REWARD : AutoState.ABYSS_CH_CLICK_START);
+                } else if (abyssMenuWaitTick++ > ABYSS_MENU_TIMEOUT) {
+                    abyssMenuWaitTick = 0;
+                    abyssTo(client, AutoState.ABYSS_CLICK_NPC);
+                }
+                break;
+
+            // ---------- 深渊挑战 ----------
+            case ABYSS_CH_CLICK_START:
+                if (handler != null && clickSlotByKeyword(handler, client, "开始挑战")) {
+                    abyssTo(client, AutoState.ABYSS_CH_CLICK_START_NOW);
+                } else if (abyssStepTick++ > ABYSS_MENU_TIMEOUT) {
+                    abyssStepTick = 0;
+                    abyssTo(client, AutoState.ABYSS_CLICK_NPC);
+                }
+                break;
+
+            case ABYSS_CH_CLICK_START_NOW:
+                if (handler != null && clickSlotByKeyword(handler, client, "现在开始挑战")) {
+                    abyssTo(client, AutoState.ABYSS_CH_ENTER_SCENE);
+                } else if (abyssStepTick++ > ABYSS_MENU_TIMEOUT) {
+                    abyssStepTick = 0;
+                    abyssTo(client, AutoState.ABYSS_CLICK_NPC);
+                }
+                break;
+
+            case ABYSS_CH_ENTER_SCENE:
+                // 等待传送进入挑战场景（菜单关闭 + 缓冲）
+                abyssStepTick++;
+                if (!isMenuOpen(client) && abyssStepTick > 40) {
+                    abyssTo(client, AutoState.ABYSS_CH_WALK_1);
+                }
+                break;
+
+            case ABYSS_CH_WALK_1:
+                handleAbyssMove(client, ABYSS_CH_POS_1, false, AutoState.ABYSS_CH_WALK_2);
+                break;
+
+            case ABYSS_CH_WALK_2:
+                handleAbyssMove(client, ABYSS_CH_POS_2, false, AutoState.ABYSS_CH_FLY_1);
+                break;
+
+            case ABYSS_CH_FLY_1:
+                handleAbyssMove(client, ABYSS_CH_POS_3, true, AutoState.ABYSS_CH_BREAK_GLASS);
+                break;
+
+            case ABYSS_CH_BREAK_GLASS:
+                if (breakBlockAbove(client)) {
+                    abyssTo(client, AutoState.ABYSS_CH_FLY_2);
+                } else if (abyssStepTick++ > 200) {
+                    abyssTo(client, AutoState.ABYSS_CH_FLY_2);
+                }
+                break;
+
+            case ABYSS_CH_FLY_2:
+                handleAbyssMove(client, ABYSS_CH_POS_4, true, AutoState.ABYSS_CH_FIGHT_WAIT);
+                break;
+
+            case ABYSS_CH_FIGHT_WAIT:
+                // 仅凭聊天关键词判断战斗结束，禁止固定等待替代
+                if (abyssFightEnded) {
+                    abyssFightEnded = false;
+                    abyssCurrentCycle++;
+                    boolean done = (abyssMaxCycles > 0 && abyssCurrentCycle >= abyssMaxCycles);
+                    if (done) {
+                        client.player.sendMessage(Text.literal("§a[魔塔助手] 深渊挑战已完成 " + abyssCurrentCycle + " 轮，自动停止！"), false);
+                        abyssStopAll(client);
+                    } else {
+                        client.player.sendMessage(Text.literal("§e[魔塔助手] 深渊挑战第 " + abyssCurrentCycle + " 轮结束，间隔 " + ABYSS_CH_INTERVAL_SECONDS + " 秒后开始下一轮..."), false);
+                        abyssTo(client, AutoState.ABYSS_CH_INTERVAL);
+                    }
+                }
+                break;
+
+            case ABYSS_CH_INTERVAL:
+                abyssStepTick++;
+                if (abyssStepTick >= ABYSS_CH_INTERVAL_SECONDS * 20) {
+                    abyssTo(client, AutoState.ABYSS_CLICK_NPC);
+                }
+                break;
+
+            // ---------- 深渊奖励 ----------
+            case ABYSS_RW_CLICK_REWARD:
+                if (isMenuOpen(client) && handler != null && clickSlotByKeyword(handler, client, "奖励领取")) {
+                    rewardPageIndex = 0; // 当前页从 0 开始
+                    abyssStepTick = 0;
+                    switchState(client, AutoState.ABYSS_RW_SCAN);
+                } else if (abyssStepTick++ > ABYSS_MENU_TIMEOUT) {
+                    abyssTo(client, AutoState.ABYSS_RW_CLOSE_RETRY);
+                }
+                break;
+
+            case ABYSS_RW_SCAN:
+                // 等待界面刷新后再扫描
+                if (abyssStepTick++ < 6) break;
+                abyssStepTick = 0;
+
+                int pagesToSkip = rewardN - 1;
+                if (rewardPageIndex < pagesToSkip) {
+                    // 需要先翻页到目标页
+                    if (handler != null && clickSlotByKeyword(handler, client, "下一页")) {
+                        rewardPageIndex++;
+                        abyssTo(client, AutoState.ABYSS_RW_NEXT_PAGE);
+                    }
+                    break;
+                }
+
+                if (findRewardSlot(client, handler, rewardTargetNumber) >= 0) {
+                    // 找到目标数字，调用 Wurst steal 领取
+                    triggerWurstSteal();
+                    abyssStepTick = 0;
+                    switchState(client, AutoState.ABYSS_RW_STEAL);
+                } else {
+                    // 找不到：必须重试打开界面，不能直接 n+1 跳过
+                    client.player.sendMessage(Text.literal("§c[魔塔助手] 未识别到目标 [" + rewardTargetNumber + "]，关闭菜单重试..."), false);
+                    abyssTo(client, AutoState.ABYSS_RW_CLOSE_RETRY);
+                }
+                break;
+
+            case ABYSS_RW_NEXT_PAGE:
+                // 每点一次下一页等待页面刷新后再扫描
+                if (abyssStepTick++ > 8) {
+                    abyssTo(client, AutoState.ABYSS_RW_SCAN);
+                }
+                break;
+
+            case ABYSS_RW_STEAL:
+                // 领取后等待服务器自动返回 NPC 菜单
+                abyssStepTick++;
+                if (abyssStepTick > 40) {
+                    rewardN++;
+                    rewardTargetNumber = rewardN * 25;
+                    client.player.sendMessage(Text.literal("§a[魔塔助手] 已领取 [" + (rewardN - 1) * 25 + "]，推进至下一个目标 [" + rewardTargetNumber + "]"), false);
+                    abyssTo(client, AutoState.ABYSS_RW_CLICK_REWARD);
+                }
+                break;
+
+            case ABYSS_RW_CLOSE_RETRY:
+                // 按 E 关闭菜单，重新右键 NPC 再点奖励领取
+                if (client.currentScreen != null) client.setScreen(null);
+                abyssStepTick++;
+                if (abyssStepTick > 5) {
+                    abyssTo(client, AutoState.ABYSS_CLICK_NPC);
+                }
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    /** 发 goto 命令并在到达后切状态；fly=true 飞行、false 走路。 */
+    private static void handleAbyssMove(MinecraftClient client, Vec3d target, boolean fly, AutoState next) {
+        if (abyssSubStep == 0) {
+            if (fly) ensureFlying(client); else disableFlight(client);
+            executeWurstCommandDirectly(String.format("goto %.0f %.0f %.0f", target.x, target.y, target.z));
+            abyssSubStep = 1;
+            return;
+        }
+        abyssStepTick++;
+        if (isArrived(client.player.getPos(), target, ABYSS_ARRIVE_DIST) || abyssStepTick > ABYSS_GOTO_TIMEOUT) {
+            resetFlightKeys(client);
+            abyssStepTick = 0;
+            abyssSubStep = 0;
+            switchState(client, next);
+        }
+    }
+
+    private static boolean isMenuOpen(MinecraftClient client) {
+        return client.currentScreen != null && !(client.currentScreen instanceof ChatScreen);
+    }
+
+    private static Entity findAbyssNpc(MinecraftClient client) {
+        if (client.world == null || client.player == null) return null;
+        Entity fallback = null;
+        for (Entity entity : client.world.getEntities()) {
+            if (entity == null) continue;
+            String clean = stripColorCodes(entity.getDisplayName());
+            if (clean.isEmpty()) continue;
+            if (clean.contains("深 渊")) return entity;                       // 严格：中间带空格
+            if (fallback == null && clean.contains("深渊")) fallback = entity; // 兜底：无空格
+        }
+        return fallback;
+    }
+
+    private static String stripColorCodes(Text text) {
+        if (text == null) return "";
+        return text.getString().replaceAll("§[0-9a-fk-orA-FK-OR]", "");
+    }
+
+    private static void lookAtEntity(MinecraftClient client, Entity entity) {
+        if (client.player == null || entity == null) return;
+        double dx = entity.getX() - client.player.getX();
+        double dy = entity.getEyeY() - client.player.getEyeY();
+        double dz = entity.getZ() - client.player.getZ();
+        double dist = Math.sqrt(dx * dx + dz * dz);
+        float yaw = (float) (Math.atan2(dz, dx) * (180 / Math.PI)) - 90.0F;
+        float pitch = (float) (-(Math.atan2(dy, dist) * (180 / Math.PI)));
+        client.player.setYaw(yaw);
+        client.player.setPitch(pitch);
+    }
+
+    private static void clickAbyssNpc(MinecraftClient client) {
+        Entity npc = findAbyssNpc(client);
+        if (npc == null) {
+            debugAbyssEntities(client);
+            return;
+        }
+        lookAtEntity(client, npc);
+        if (client.interactionManager != null && client.player != null) {
+            client.interactionManager.interactEntity(client.player, npc, Hand.MAIN_HAND);
+            client.player.swingHand(Hand.MAIN_HAND);
+        }
+    }
+
+    private static void debugAbyssEntities(MinecraftClient client) {
+        if (client.world == null || client.player == null) return;
+        StringBuilder sb = new StringBuilder("§7[魔塔助手] 未找到NPC【深 渊】，附近实体: ");
+        int count = 0;
+        for (Entity e : client.world.getEntities()) {
+            if (e == null) continue;
+            String name = stripColorCodes(e.getDisplayName());
+            if (name.isEmpty()) continue;
+            if (e.squaredDistanceTo(client.player) > 100) continue;
+            sb.append("[").append(name).append("] ");
+            if (++count >= 10) break;
+        }
+        client.player.sendMessage(Text.literal(sb.toString()), false);
+    }
+
+    private static void disableWurstFlight() {
+        try {
+            if (flightHackCache != null && flightHackSetEnabledMethodCache != null) {
+                flightHackSetEnabledMethodCache.invoke(flightHackCache, false);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void disableFlight(MinecraftClient client) {
+        if (client.player != null) {
+            if (client.player.getAbilities().flying) {
+                client.player.getAbilities().flying = false;
+                client.player.getAbilities().allowFlying = false;
+                client.player.sendAbilitiesUpdate();
+            }
+        }
+        ensureFlightHackResolved();
+        disableWurstFlight();
+    }
+
+    private static boolean breakBlockAbove(MinecraftClient client) {
+        if (client.player == null || client.interactionManager == null || client.world == null) return true;
+        int px = (int) Math.floor(client.player.getX());
+        int py = (int) Math.floor(client.player.getY());
+        int pz = (int) Math.floor(client.player.getZ());
+
+        BlockPos target = null;
+        for (int dy : new int[]{2, 1}) {
+            BlockPos p = new BlockPos(px, py + dy, pz);
+            if (!client.world.getBlockState(p).isAir()) {
+                target = p;
+                break;
+            }
+        }
+        if (target == null) return true; // 头顶已无方块
+        client.player.setPitch(-89.0F);
+        client.interactionManager.attackBlock(target, Direction.UP);
+        client.player.swingHand(Hand.MAIN_HAND);
+        return false;
+    }
+
+    private static int findRewardSlot(MinecraftClient client, ScreenHandler handler, int targetNumber) {
+        if (handler == null || client.player == null) return -1;
+        String target = String.valueOf(targetNumber);
+        for (int i = 0; i < handler.slots.size(); i++) {
+            ItemStack stack = handler.getSlot(i).getStack();
+            if (stack.isEmpty()) continue;
+            if (stack.getName().getString().contains(target)) return i;
+            for (Text t : stack.getTooltip(Item.TooltipContext.DEFAULT, client.player, TooltipType.BASIC)) {
+                if (t.getString().contains(target)) return i;
+            }
+        }
+        return -1;
+    }
+
+    private static void triggerWurstSteal() {
+        try {
+            Class<?> wurstClass = Class.forName("net.wurstclient.WurstClient");
+            Object wurstInstance = wurstClass.getField("INSTANCE").get(null);
+            Object hax = wurstClass.getMethod("getHax").invoke(wurstInstance);
+            Object stealHack = null;
+            try {
+                Field field = hax.getClass().getField("stealHack");
+                stealHack = field.get(hax);
+            } catch (NoSuchFieldException e) {
+                stealHack = hax.getClass().getMethod("getHackByName", String.class).invoke(hax, "Steal");
+            }
+            if (stealHack != null) {
+                Method setEnabled = stealHack.getClass().getMethod("setEnabled", boolean.class);
+                setEnabled.invoke(stealHack, true);
+            }
+        } catch (Throwable e) {
+            e.printStackTrace();
+        }
+    }
+
+    private static void abyssStopAll(MinecraftClient client) {
+        abyssMode = false;
+        abyssRewardMode = false;
+        abyssRewardTerminate = false;
+        abyssFightEnded = false;
+        abyssStepTick = 0;
+        abyssSubStep = 0;
+        resetFlightKeys(client);
+        switchState(client, AutoState.IDLE);
+        if (client.player != null) {
+            client.player.sendMessage(Text.literal("§c[魔塔助手] 深渊自动化已终止！"), false);
+        }
     }
 }
