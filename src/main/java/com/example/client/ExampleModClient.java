@@ -41,8 +41,6 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 public class ExampleModClient implements ClientModInitializer {
     private static KeyBinding testKeyBinding;
@@ -95,6 +93,7 @@ public class ExampleModClient implements ClientModInitializer {
     private enum AutoState {
         IDLE("闲置中"),
         PAUSED("已暂停"),
+        WAIT_CYCLE_DELAY("循环间隔等待中"),
         WAIT_RECONNECT_SUBMENU("等待踢回重连子服菜单"),
         WAIT_MAIN_MENU("等待主菜单"),
         WAIT_CHAPTER_MENU("等待章节菜单"),
@@ -169,6 +168,11 @@ public class ExampleModClient implements ClientModInitializer {
     private static String selectedTownLine = "魔塔一区";
     private static String selectedCopyLine = "一线";
     private static boolean autoSwitchLine = false;
+    private static int townLineStartIndex = 0;
+    private static int townLineEndIndex = 9;
+    private static boolean enableCycleDelay = false;
+    private static int cycleDelaySeconds = 0;
+    private static int cycleDelayTicks = 0;
 
     private static int delayTicks = 0;
     private static final int CLICK_DELAY = 12;
@@ -310,11 +314,16 @@ public class ExampleModClient implements ClientModInitializer {
         }
     }
 
-    public static void startFullAutomation(TargetFloor floor, String townLine, String copyLine, boolean enableAutoSwitch) {
+    public static void startFullAutomation(TargetFloor floor, int startTownIdx, int endTownIdx, String copyLine, boolean enableAutoSwitch, boolean enableDelay, int delaySeconds) {
         selectedFloor = floor;
-        selectedTownLine = formatTownLineName(townLine);
+        townLineStartIndex = Math.max(0, Math.min(startTownIdx, TOWN_LINES_1_TO_10.size() - 1));
+        townLineEndIndex = Math.max(0, Math.min(endTownIdx, TOWN_LINES_1_TO_10.size() - 1));
+        selectedTownLine = TOWN_LINES_1_TO_10.get(townLineStartIndex);
         selectedCopyLine = copyLine;
         autoSwitchLine = enableAutoSwitch;
+        enableCycleDelay = enableDelay;
+        cycleDelaySeconds = Math.max(0, delaySeconds);
+        cycleDelayTicks = 0;
         currentLineIndex = 0;
         lineCheckRetryCount = 0;
         isWaitingForServerLore = false;
@@ -370,31 +379,6 @@ public class ExampleModClient implements ClientModInitializer {
 
             client.player.networkHandler.sendChatMessage("/menu");
         }
-    }
-
-    private static final String[] CN_NUMS = {"一", "二", "三", "四", "五", "六", "七", "八", "九", "十"};
-    private static String formatTownLineName(String input) {
-        if (input == null || input.isEmpty()) return "魔塔一区";
-        if (input.startsWith("魔塔")) return input;
-
-        Matcher matcher = Pattern.compile("(\\d+|[一二三四五六七八九十]+)").matcher(input);
-        if (matcher.find()) {
-            String val = matcher.group(1);
-            int num = -1;
-            try {
-                num = Integer.parseInt(val);
-            } catch (NumberFormatException e) {
-                for (int i = 0; i < CN_NUMS.length; i++) {
-                    if (CN_NUMS[i].equals(val)) {
-                        num = i + 1;
-                        break;
-                    }
-                }
-            }
-            if (num == 1) return "魔塔一区";
-            if (num > 1 && num <= 10) return "魔塔" + CN_NUMS[num - 1] + "线";
-        }
-        return input;
     }
 
     private static int getTownIndex(String townLineStr) {
@@ -535,7 +519,8 @@ public class ExampleModClient implements ClientModInitializer {
 
             String statusColor = (currentState == AutoState.IDLE) ? "§7" : (currentState == AutoState.PAUSED ? "§c" : "§a");
             drawContext.drawTextWithShadow(client.textRenderer, Text.literal("状态: " + statusColor + currentState.getDesc()), statusX, statusY + 12, 0xFFFFFF);
-            drawContext.drawTextWithShadow(client.textRenderer, Text.literal("镇线: §b" + selectedTownLine + " §8| §f层数: §b" + selectedFloor.name()), statusX, statusY + 24, 0xFFFFFF);
+            String townRange = (townLineStartIndex + 1) + "~" + (townLineEndIndex + 1);
+            drawContext.drawTextWithShadow(client.textRenderer, Text.literal("镇线: §b" + selectedTownLine + " §8| §f层数: §b" + selectedFloor.name() + " §8| §f范围: §b" + townRange), statusX, statusY + 24, 0xFFFFFF);
 
             String lineInfo = selectedCopyLine + (autoSwitchLine ? " (抢线开启)" : " (抢线关闭)");
             drawContext.drawTextWithShadow(client.textRenderer, Text.literal("目标分线: §b" + lineInfo), statusX, statusY + 36, 0xFFFFFF);
@@ -602,6 +587,14 @@ public class ExampleModClient implements ClientModInitializer {
             }
 
             if (currentState == AutoState.PAUSED || currentState == AutoState.IDLE) return;
+
+            if (currentState == AutoState.WAIT_CYCLE_DELAY) {
+                cycleDelayTicks--;
+                if (cycleDelayTicks <= 0) {
+                    startMenuSequence();
+                }
+                return;
+            }
 
             if (currentState != AutoState.WAIT_LOBBY_TELEPORT && currentState != AutoState.WAIT_LOBBY_BUFFER) {
                 ScreenHandler activeHandler = client.player.currentScreenHandler;
@@ -1029,11 +1022,7 @@ public class ExampleModClient implements ClientModInitializer {
                         bossKilledByChat = false;
                         chatWaitTicks = 0;
 
-                        if (!autoSwitchLine && selectedFloor == TargetFloor.F12C) {
-                            skipCurrentAndAdvanceNext(client);
-                        } else {
-                            switchState(client, AutoState.IDLE);
-                        }
+                        skipCurrentAndAdvanceNext(client);
                     }
                 }
                 else if (currentState == AutoState.GOTO_10C_PART1) {
@@ -1287,19 +1276,26 @@ public class ExampleModClient implements ClientModInitializer {
         if (copyIndex != -1 && copyIndex < COPY_LINES_12C.size() - 1) {
             selectedCopyLine = COPY_LINES_12C.get(copyIndex + 1);
             client.player.sendMessage(Text.literal("§e[循环系统] 跳过当前，推进至同镇线下一分线: §b" + selectedCopyLine), false);
-        } else {
-            selectedCopyLine = "一线";
-            int currentTownIndex = getTownIndex(selectedTownLine);
-
-            if (currentTownIndex < 9) {
-                selectedTownLine = TOWN_LINES_1_TO_10.get(currentTownIndex + 1);
-            } else {
-                selectedTownLine = TOWN_LINES_1_TO_10.get(0);
-            }
-            client.player.sendMessage(Text.literal("§e[循环系统] 推进至下一镇线: §b" + selectedTownLine), false);
+            startMenuSequence();
+            return;
         }
 
-        startMenuSequence();
+        selectedCopyLine = "一线";
+        int currentTownIndex = getTownIndex(selectedTownLine);
+        boolean rangeWrapped = (currentTownIndex == townLineEndIndex);
+        int nextTownIndex = rangeWrapped
+                ? townLineStartIndex
+                : (currentTownIndex + 1) % TOWN_LINES_1_TO_10.size();
+        selectedTownLine = TOWN_LINES_1_TO_10.get(nextTownIndex);
+        client.player.sendMessage(Text.literal("§e[循环系统] 推进至下一镇线: §b" + selectedTownLine), false);
+
+        if (enableCycleDelay && cycleDelaySeconds > 0 && rangeWrapped) {
+            cycleDelayTicks = cycleDelaySeconds * 20;
+            client.player.sendMessage(Text.literal("§e[循环系统] 一轮镇线范围已跑完，等待 §b" + cycleDelaySeconds + " §e秒后开启下一轮..."), false);
+            switchState(client, AutoState.WAIT_CYCLE_DELAY);
+        } else {
+            startMenuSequence();
+        }
     }
 
     private static boolean navigateVerticalFirst(MinecraftClient client, Vec3d playerPos, Vec3d target) {
