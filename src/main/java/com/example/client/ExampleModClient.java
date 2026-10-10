@@ -215,6 +215,7 @@ public class ExampleModClient implements ClientModInitializer {
     private static Method multiAuraSetEnabledMethodCache = null;
     private static boolean multiAuraResolutionAttempted = false;
     private static int multiAuraCheckTick = 0;
+    private static boolean abyssPlayerCountStopped = false;        // 检测到仅剩最后一个 Boss 后，停止周围玩家统计
     private static final int MULTI_AURA_CHECK_INTERVAL = 20;      // 1 秒 = 20 tick
     private static final double MULTI_AURA_CHECK_RADIUS = 15.0;   // 半径 15 格
 
@@ -2066,13 +2067,16 @@ public class ExampleModClient implements ClientModInitializer {
                 break;
 
             case ABYSS_CH_FIGHT_WAIT:
-                // MultiAura 已开启，每 1 秒检测周围玩家数量；boss 也是玩家实体，剩最后一个 boss（自己 + boss = 2 人）时关闭
-                multiAuraCheckTick++;
-                if (multiAuraCheckTick >= MULTI_AURA_CHECK_INTERVAL) {
-                    multiAuraCheckTick = 0;
-                    if (countNearbyPlayers(client, MULTI_AURA_CHECK_RADIUS) == 2) {
-                        client.player.sendMessage(Text.literal("§c[魔塔助手] 检测到仅剩最后一个 Boss，已关闭 MultiAura！"), false);
-                        disableMultiAura();
+                // MultiAura 已开启，每 1 秒检测周围玩家数量；boss 也是玩家实体，剩最后一个 boss（自己 + boss = 2 人）时关闭，并停止统计周围玩家
+                if (!abyssPlayerCountStopped) {
+                    multiAuraCheckTick++;
+                    if (multiAuraCheckTick >= MULTI_AURA_CHECK_INTERVAL) {
+                        multiAuraCheckTick = 0;
+                        if (countNearbyPlayers(client, MULTI_AURA_CHECK_RADIUS) == 2) {
+                            client.player.sendMessage(Text.literal("§c[魔塔助手] 检测到仅剩最后一个 Boss，已关闭 MultiAura 并停止统计周围玩家！"), false);
+                            disableMultiAura();
+                            abyssPlayerCountStopped = true;
+                        }
                     }
                 }
 
@@ -2199,6 +2203,7 @@ public class ExampleModClient implements ClientModInitializer {
             if (next == AutoState.ABYSS_CH_FIGHT_WAIT) {
                 enableMultiAura();
                 multiAuraCheckTick = 0;
+                abyssPlayerCountStopped = false;
                 double bossDist = getNearestPlayerDistance(client);
                 client.player.sendMessage(Text.literal(String.format("§a[魔塔助手] 战斗开始，已开启 MultiAura！（最近 Boss 距离 §e%.1f§a 格）", bossDist)), false);
             }
