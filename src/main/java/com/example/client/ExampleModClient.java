@@ -11,6 +11,7 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
+import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.screen.ChatScreen;
 import net.minecraft.client.option.KeyBinding;
@@ -24,6 +25,7 @@ import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.text.Text;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
+import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
@@ -204,6 +206,7 @@ public class ExampleModClient implements ClientModInitializer {
     private static boolean abyssRewardTerminate = false;
     private static int abyssMenuWaitTick = 0;
     private static int rewardPageIndex = 0;
+    private static boolean glassDebugPrinted = false;
 
     private static TargetFloor selectedFloor = TargetFloor.F10C;
     private static String selectedTownLine = "魔塔一区";
@@ -300,7 +303,7 @@ public class ExampleModClient implements ClientModInitializer {
     // --- 深渊自动化坐标与常量 ---
     private static final Vec3d ABYSS_NPC_POS = new Vec3d(0, 64, -1);
     private static final Vec3d ABYSS_CH_POS_1 = new Vec3d(8, 20, 5);
-    private static final Vec3d ABYSS_CH_POS_2 = new Vec3d(8, 20, 15);
+    private static final Vec3d ABYSS_CH_POS_2 = new Vec3d(8, 20, 30);
     private static final Vec3d ABYSS_CH_POS_3 = new Vec3d(8, 20, 4);
     private static final Vec3d ABYSS_CH_POS_4 = new Vec3d(8, 20, 22);
     private static final int ABYSS_CH_INTERVAL_SECONDS = 10;
@@ -1510,7 +1513,7 @@ public class ExampleModClient implements ClientModInitializer {
 
         client.player.setPitch(targetPitch);
 
-        boolean fwd = true;
+        boolean fwd = horizDist > 0.3;
         boolean jmp = dy > 0.5;
         boolean snk = dy < -0.5;
 
@@ -1778,9 +1781,15 @@ public class ExampleModClient implements ClientModInitializer {
 
             if (flightHack == null) return;
 
-            Method getSettingByName = flightHack.getClass().getMethod("getSettingByName", String.class);
-            Object h = getSettingByName.invoke(flightHack, "Horizontal speed");
-            Object v = getSettingByName.invoke(flightHack, "Vertical speed");
+            // Wurst 7.x 没有 getSettingByName，速度滑块是 FlightHack 的 public 字段
+            Object h = null;
+            Object v = null;
+            try {
+                h = flightHack.getClass().getField("horizontalSpeed").get(flightHack);
+            } catch (NoSuchFieldException ignored) {}
+            try {
+                v = flightHack.getClass().getField("verticalSpeed").get(flightHack);
+            } catch (NoSuchFieldException ignored) {}
 
             flightHackCache = flightHack;
             horizontalSpeedSettingCache = h;
@@ -1859,6 +1868,7 @@ public class ExampleModClient implements ClientModInitializer {
         abyssStepTick = 0;
         abyssSubStep = 0;
         abyssMenuWaitTick = 0;
+        glassDebugPrinted = false;
         setFlightSpeeds();
         if (client.currentScreen != null) client.setScreen(null);
         abyssTo(client, AutoState.ABYSS_WAIT_MAIN_MENU);
@@ -1897,27 +1907,33 @@ public class ExampleModClient implements ClientModInitializer {
         switch (currentState) {
             // ---------- 共用前置：主菜单 -> 功能性 -> 深渊与矿坑 -> 传送到深渊 ----------
             case ABYSS_WAIT_MAIN_MENU:
+                abyssStepTick++;
+                if (abyssStepTick < 15) break;
                 if (handler != null && clickSlotByKeyword(handler, client, "功能性")) {
                     abyssTo(client, AutoState.ABYSS_WAIT_FUNC_MENU);
-                } else if (abyssStepTick++ > ABYSS_MENU_TIMEOUT) {
+                } else if (abyssStepTick > ABYSS_MENU_TIMEOUT) {
                     abyssStepTick = 0;
                     client.player.networkHandler.sendChatMessage("/menu");
                 }
                 break;
 
             case ABYSS_WAIT_FUNC_MENU:
-                if (handler != null && (clickSlotByKeyword(handler, client, "深渊与矿坑") || clickSlotByKeyword(handler, client, "深渊"))) {
+                abyssStepTick++;
+                if (abyssStepTick < 15) break;
+                if (handler != null && clickSlotByKeyword(handler, client, "深渊与矿坑")) {
                     abyssTo(client, AutoState.ABYSS_WAIT_ABYSS_MENU);
-                } else if (abyssStepTick++ > ABYSS_MENU_TIMEOUT) {
+                } else if (abyssStepTick > ABYSS_MENU_TIMEOUT) {
                     abyssStepTick = 0;
                     client.player.networkHandler.sendChatMessage("/menu");
                 }
                 break;
 
             case ABYSS_WAIT_ABYSS_MENU:
-                if (handler != null && (clickSlotByKeyword(handler, client, "传送到深渊") || clickSlotByKeyword(handler, client, "传送"))) {
+                abyssStepTick++;
+                if (abyssStepTick < 15) break;
+                if (handler != null && clickSlotByKeyword(handler, client, "传送到深渊")) {
                     abyssTo(client, AutoState.ABYSS_TELEPORT_WAIT);
-                } else if (abyssStepTick++ > ABYSS_MENU_TIMEOUT) {
+                } else if (abyssStepTick > ABYSS_MENU_TIMEOUT) {
                     abyssStepTick = 0;
                     client.player.networkHandler.sendChatMessage("/menu");
                 }
@@ -1953,18 +1969,22 @@ public class ExampleModClient implements ClientModInitializer {
 
             // ---------- 深渊挑战 ----------
             case ABYSS_CH_CLICK_START:
+                abyssStepTick++;
+                if (abyssStepTick < 15) break;
                 if (handler != null && clickSlotByKeyword(handler, client, "开始挑战")) {
                     abyssTo(client, AutoState.ABYSS_CH_CLICK_START_NOW);
-                } else if (abyssStepTick++ > ABYSS_MENU_TIMEOUT) {
+                } else if (abyssStepTick > ABYSS_MENU_TIMEOUT) {
                     abyssStepTick = 0;
                     abyssTo(client, AutoState.ABYSS_CLICK_NPC);
                 }
                 break;
 
             case ABYSS_CH_CLICK_START_NOW:
+                abyssStepTick++;
+                if (abyssStepTick < 15) break;
                 if (handler != null && clickSlotByKeyword(handler, client, "现在开始挑战")) {
                     abyssTo(client, AutoState.ABYSS_CH_ENTER_SCENE);
-                } else if (abyssStepTick++ > ABYSS_MENU_TIMEOUT) {
+                } else if (abyssStepTick > ABYSS_MENU_TIMEOUT) {
                     abyssStepTick = 0;
                     abyssTo(client, AutoState.ABYSS_CLICK_NPC);
                 }
@@ -1991,9 +2011,12 @@ public class ExampleModClient implements ClientModInitializer {
                 break;
 
             case ABYSS_CH_BREAK_GLASS:
+                // 飞行 goto 已就位，停稳缓冲 1s 后抬头射线击碎（射线打空则扫描头顶列兜底）
+                abyssStepTick++;
+                if (abyssStepTick < 20) break;
                 if (breakBlockAbove(client)) {
                     abyssTo(client, AutoState.ABYSS_CH_FLY_2);
-                } else if (abyssStepTick++ > 200) {
+                } else if (abyssStepTick > 200) {
                     abyssTo(client, AutoState.ABYSS_CH_FLY_2);
                 }
                 break;
@@ -2027,11 +2050,13 @@ public class ExampleModClient implements ClientModInitializer {
 
             // ---------- 深渊奖励 ----------
             case ABYSS_RW_CLICK_REWARD:
+                abyssStepTick++;
+                if (abyssStepTick < 15) break;
                 if (isMenuOpen(client) && handler != null && clickSlotByKeyword(handler, client, "奖励领取")) {
                     rewardPageIndex = 0; // 当前页从 0 开始
                     abyssStepTick = 0;
                     switchState(client, AutoState.ABYSS_RW_SCAN);
-                } else if (abyssStepTick++ > ABYSS_MENU_TIMEOUT) {
+                } else if (abyssStepTick > ABYSS_MENU_TIMEOUT) {
                     abyssTo(client, AutoState.ABYSS_RW_CLOSE_RETRY);
                 }
                 break;
@@ -2201,17 +2226,45 @@ public class ExampleModClient implements ClientModInitializer {
         int py = (int) Math.floor(client.player.getY());
         int pz = (int) Math.floor(client.player.getZ());
 
+        // 抬头后用射线命中头顶第一个方块
+        client.player.setPitch(-89.0F);
         BlockPos target = null;
-        for (int dy : new int[]{2, 1}) {
-            BlockPos p = new BlockPos(px, py + dy, pz);
-            if (!client.world.getBlockState(p).isAir()) {
-                target = p;
-                break;
+        HitResult hit = client.player.raycast(5.0, 1.0F, false);
+        if (hit != null && hit.getType() == HitResult.Type.BLOCK) {
+            BlockPos p = ((BlockHitResult) hit).getBlockPos();
+            if (!client.world.getBlockState(p).isAir()) target = p;
+        }
+
+        // 射线打空（玩家略高/列偏差）则扫描头顶 y+2 / y+1 兜底
+        if (target == null) {
+            for (int dy : new int[]{2, 1}) {
+                BlockPos p = new BlockPos(px, py + dy, pz);
+                if (!client.world.getBlockState(p).isAir()) {
+                    target = p;
+                    break;
+                }
             }
         }
-        if (target == null) return true; // 头顶已无方块
-        client.player.setPitch(-89.0F);
-        client.interactionManager.attackBlock(target, Direction.UP);
+
+        if (!glassDebugPrinted) {
+            glassDebugPrinted = true;
+            StringBuilder sb = new StringBuilder("§7[魔塔助手] 碎玻璃诊断 玩家=");
+            sb.append(String.format("%.2f,%.2f,%.2f", client.player.getX(), client.player.getY(), client.player.getZ()));
+            for (int dy = 1; dy <= 4; dy++) {
+                BlockPos p = new BlockPos(px, py + dy, pz);
+                BlockState st = client.world.getBlockState(p);
+                sb.append(" | y+").append(dy).append("(").append(py + dy).append(")=")
+                  .append(st.isAir() ? "空气" : st.getBlock().getTranslationKey());
+            }
+            sb.append(" | 目标=").append(target == null ? "无" : target.toShortString());
+            client.player.sendMessage(Text.literal(sb.toString()), false);
+        }
+
+        if (target == null) return true; // 头顶无方块
+        // attackBlock 仅发送 START_DESTROY_BLOCK，生存模式下不会真正破坏方块；
+        // 必须再调用 updateBlockBreakingProgress 推进破坏进度并完成挖掘。
+        client.interactionManager.attackBlock(target, Direction.DOWN);
+        client.interactionManager.updateBlockBreakingProgress(target, Direction.DOWN);
         client.player.swingHand(Hand.MAIN_HAND);
         return false;
     }
