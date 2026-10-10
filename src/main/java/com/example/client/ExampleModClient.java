@@ -163,12 +163,13 @@ public class ExampleModClient implements ClientModInitializer {
 
         // --- 深渊挑战 / 深渊奖励自动化 ---
         ABYSS_WAIT_MAIN_MENU("深渊-等待主菜单"),
-        ABYSS_WAIT_FUNC_MENU("深渊-等待功能性菜单"),
-        ABYSS_WAIT_ABYSS_MENU("深渊-等待深渊与矿坑菜单"),
+        ABYSS_WAIT_FUNC_MENU("深渊-等待魔塔副本菜单"),
+        ABYSS_WAIT_ABYSS_MENU("深渊-等待魔塔其他副本菜单"),
         ABYSS_TELEPORT_WAIT("深渊-等待传送到深渊"),
         ABYSS_GOTO_NPC("深渊-飞行前往NPC(0,64,-1)"),
         ABYSS_CLICK_NPC("深渊-右键NPC"),
         ABYSS_WAIT_NPC_MENU("深渊-等待NPC菜单"),
+        ABYSS_WAIT_NPC_RETRY("深渊-地牢创建频繁，等待重试"),
 
         ABYSS_CH_CLICK_START("深渊挑战-点击开始挑战"),
         ABYSS_CH_CLICK_START_NOW("深渊挑战-点击现在开始挑战"),
@@ -202,6 +203,7 @@ public class ExampleModClient implements ClientModInitializer {
     private static int abyssStepTick = 0;
     private static int abyssSubStep = 0;
     private static boolean abyssFightEnded = false;
+    private static boolean abyssFrequentNotice = false;
     private static int rewardN = 1;
     private static int rewardTargetNumber = 25;
     private static boolean abyssRewardTerminate = false;
@@ -311,6 +313,7 @@ public class ExampleModClient implements ClientModInitializer {
     private static final double ABYSS_ARRIVE_DIST = 2.5;
     private static final int ABYSS_GOTO_TIMEOUT = 300;
     private static final int ABYSS_MENU_TIMEOUT = 200;
+    private static final int ABYSS_NPC_RETRY_TICKS = 40; // 检测到地牢创建频繁后间隔 2 秒再点 NPC
 
     private static Object wurstCmdProcessorCache = null;
     private static Method wurstProcessMethodCache = null;
@@ -544,8 +547,12 @@ public class ExampleModClient implements ClientModInitializer {
             if (abyssMode && !abyssRewardMode && (cleanMsg.contains("挑战失败了") || cleanMsg.contains("5秒后自动离开"))) {
                 abyssFightEnded = true;
             }
-            if (abyssRewardMode && cleanMsg.contains("你还未挑战成功该层数")) {
+            if (abyssRewardMode && (cleanMsg.contains("你还未挑战成功该层数") || cleanMsg.contains("180层的奖励"))) {
                 abyssRewardTerminate = true;
+            }
+
+            if (abyssMode && cleanMsg.contains("同一时刻地牢创建频繁")) {
+                abyssFrequentNotice = true;
             }
 
             if (cleanMsg.contains("出现在第十二层") || cleanMsg.contains("出现在第十四层")) {
@@ -1851,7 +1858,7 @@ public class ExampleModClient implements ClientModInitializer {
         startAbyssCommon();
     }
 
-    /** 启动深渊奖励自动化。 */
+    /** 启动深渊奖励自动化（跳过菜单/传送前置，直接飞至深渊NPC并打开菜单）。 */
     public static void startAbyssReward() {
         abyssMode = true;
         abyssRewardMode = true;
@@ -1860,7 +1867,16 @@ public class ExampleModClient implements ClientModInitializer {
         rewardPageIndex = 0;
         abyssRewardTerminate = false;
         abyssFightEnded = false;
-        startAbyssCommon();
+
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player == null) return;
+        abyssStepTick = 0;
+        abyssSubStep = 0;
+        abyssMenuWaitTick = 0;
+        abyssFrequentNotice = false;
+        setFlightSpeeds();
+        if (client.currentScreen != null) client.setScreen(null);
+        abyssTo(client, AutoState.ABYSS_GOTO_NPC);
     }
 
     private static void startAbyssCommon() {
@@ -1870,6 +1886,7 @@ public class ExampleModClient implements ClientModInitializer {
         abyssSubStep = 0;
         abyssMenuWaitTick = 0;
         glassDebugPrinted = false;
+        abyssFrequentNotice = false;
         setFlightSpeeds();
         if (client.currentScreen != null) client.setScreen(null);
         abyssTo(client, AutoState.ABYSS_WAIT_MAIN_MENU);
@@ -1896,7 +1913,7 @@ public class ExampleModClient implements ClientModInitializer {
             return;
         }
 
-        // 奖励终止条件：聊天收到「你还未挑战成功该层数」按一次 E 关菜单后停止
+        // 奖励终止条件：聊天收到「你还未挑战成功该层数」/「已领取180层奖励」，或领取到第8个奖励后，按一次 E 关菜单后停止
         if (abyssRewardTerminate) {
             if (client.currentScreen != null) client.setScreen(null);
             abyssStopAll(client);
@@ -1911,7 +1928,7 @@ public class ExampleModClient implements ClientModInitializer {
             case ABYSS_WAIT_MAIN_MENU:
                 abyssStepTick++;
                 if (abyssStepTick < 15) break;
-                if (handler != null && clickSlotByKeyword(handler, client, "功能性")) {
+                if (handler != null && clickSlotByKeyword(handler, client, "魔塔副本")) {
                     abyssTo(client, AutoState.ABYSS_WAIT_FUNC_MENU);
                 } else if (abyssStepTick > ABYSS_MENU_TIMEOUT) {
                     abyssStepTick = 0;
@@ -1922,7 +1939,7 @@ public class ExampleModClient implements ClientModInitializer {
             case ABYSS_WAIT_FUNC_MENU:
                 abyssStepTick++;
                 if (abyssStepTick < 15) break;
-                if (handler != null && clickSlotByKeyword(handler, client, "深渊与矿坑")) {
+                if (handler != null && clickSlotByKeyword(handler, client, "魔塔其他副本")) {
                     abyssTo(client, AutoState.ABYSS_WAIT_ABYSS_MENU);
                 } else if (abyssStepTick > ABYSS_MENU_TIMEOUT) {
                     abyssStepTick = 0;
@@ -1960,11 +1977,23 @@ public class ExampleModClient implements ClientModInitializer {
                 break;
 
             case ABYSS_WAIT_NPC_MENU:
+                if (abyssFrequentNotice) {
+                    abyssFrequentNotice = false;
+                    abyssTo(client, AutoState.ABYSS_WAIT_NPC_RETRY);
+                    break;
+                }
                 if (isMenuOpen(client)) {
                     abyssMenuWaitTick = 0;
                     abyssTo(client, abyssRewardMode ? AutoState.ABYSS_RW_CLICK_REWARD : AutoState.ABYSS_CH_CLICK_START);
                 } else if (abyssMenuWaitTick++ > ABYSS_MENU_TIMEOUT) {
                     abyssMenuWaitTick = 0;
+                    abyssTo(client, AutoState.ABYSS_CLICK_NPC);
+                }
+                break;
+
+            case ABYSS_WAIT_NPC_RETRY:
+                abyssStepTick++;
+                if (abyssStepTick >= ABYSS_NPC_RETRY_TICKS) {
                     abyssTo(client, AutoState.ABYSS_CLICK_NPC);
                 }
                 break;
@@ -2105,7 +2134,10 @@ public class ExampleModClient implements ClientModInitializer {
                     rewardN++;
                     rewardTargetNumber = rewardN * 25;
                     client.player.sendMessage(Text.literal("§a[魔塔助手] 已领取 [" + justReceived * 25 + "]，推进至下一个目标 [" + rewardTargetNumber + "]"), false);
-                    if (justReceived == 1) {
+                    if (justReceived >= 8) {
+                        // 领取到第 8 个奖励，终止
+                        abyssRewardTerminate = true;
+                    } else if (justReceived == 1) {
                         // 第一页：重新点奖励领取打开界面
                         abyssTo(client, AutoState.ABYSS_RW_CLICK_REWARD);
                     } else {
