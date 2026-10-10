@@ -11,13 +11,13 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
-import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.screen.ChatScreen;
 import net.minecraft.client.gui.screen.ingame.HandledScreen;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
 import net.minecraft.entity.Entity;
+import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.tooltip.TooltipType;
@@ -209,7 +209,14 @@ public class ExampleModClient implements ClientModInitializer {
     private static boolean abyssRewardTerminate = false;
     private static int abyssMenuWaitTick = 0;
     private static int rewardPageIndex = 0;
-    private static boolean glassDebugPrinted = false;
+    // --- 深渊战斗 MultiAura 控制 ---
+    private static Object multiAuraHackCache = null;
+    private static Method multiAuraIsEnabledMethodCache = null;
+    private static Method multiAuraSetEnabledMethodCache = null;
+    private static boolean multiAuraResolutionAttempted = false;
+    private static int multiAuraCheckTick = 0;
+    private static final int MULTI_AURA_CHECK_INTERVAL = 20;      // 1 秒 = 20 tick
+    private static final double MULTI_AURA_CHECK_RADIUS = 15.0;   // 半径 15 格
 
     private static TargetFloor selectedFloor = TargetFloor.F10C;
     private static String selectedTownLine = "魔塔一区";
@@ -546,6 +553,7 @@ public class ExampleModClient implements ClientModInitializer {
 
             if (abyssMode && !abyssRewardMode && (cleanMsg.contains("挑战失败了") || cleanMsg.contains("5秒后自动离开"))) {
                 abyssFightEnded = true;
+                disableMultiAura();
             }
             if (abyssRewardMode && (cleanMsg.contains("你还未挑战成功该层数") || cleanMsg.contains("180层的奖励"))) {
                 abyssRewardTerminate = true;
@@ -647,6 +655,7 @@ public class ExampleModClient implements ClientModInitializer {
                 abyssRewardMode = false;
                 abyssRewardTerminate = false;
                 abyssFightEnded = false;
+                disableMultiAura();
                 switchState(client, AutoState.IDLE);
                 client.player.sendMessage(Text.literal("§c[魔塔助手] 收到 '=' 键信号，程序已彻底强制停止！"), false);
             }
@@ -1885,9 +1894,9 @@ public class ExampleModClient implements ClientModInitializer {
         abyssStepTick = 0;
         abyssSubStep = 0;
         abyssMenuWaitTick = 0;
-        glassDebugPrinted = false;
         abyssFrequentNotice = false;
         setFlightSpeeds();
+        configureMultiAuraForAbyss();
         if (client.currentScreen != null) client.setScreen(null);
         abyssTo(client, AutoState.ABYSS_WAIT_MAIN_MENU);
         client.player.networkHandler.sendChatMessage("/menu");
@@ -2057,8 +2066,19 @@ public class ExampleModClient implements ClientModInitializer {
                 break;
 
             case ABYSS_CH_FIGHT_WAIT:
+                // MultiAura 已开启，每 1 秒检测周围玩家数量；boss 也是玩家实体，剩最后一个 boss（自己 + boss = 2 人）时关闭
+                multiAuraCheckTick++;
+                if (multiAuraCheckTick >= MULTI_AURA_CHECK_INTERVAL) {
+                    multiAuraCheckTick = 0;
+                    if (countNearbyPlayers(client, MULTI_AURA_CHECK_RADIUS) == 2) {
+                        client.player.sendMessage(Text.literal("§c[魔塔助手] 检测到仅剩最后一个 Boss，已关闭 MultiAura！"), false);
+                        disableMultiAura();
+                    }
+                }
+
                 // 仅凭聊天关键词判断战斗结束，禁止固定等待替代
                 if (abyssFightEnded) {
+                    disableMultiAura();
                     abyssFightEnded = false;
                     abyssCurrentCycle++;
                     boolean done = (abyssMaxCycles > 0 && abyssCurrentCycle >= abyssMaxCycles);
@@ -2176,6 +2196,12 @@ public class ExampleModClient implements ClientModInitializer {
             abyssStepTick = 0;
             abyssSubStep = 0;
             switchState(client, next);
+            if (next == AutoState.ABYSS_CH_FIGHT_WAIT) {
+                enableMultiAura();
+                multiAuraCheckTick = 0;
+                double bossDist = getNearestPlayerDistance(client);
+                client.player.sendMessage(Text.literal(String.format("§a[魔塔助手] 战斗开始，已开启 MultiAura！（最近 Boss 距离 §e%.1f§a 格）", bossDist)), false);
+            }
         }
     }
 
@@ -2250,6 +2276,138 @@ public class ExampleModClient implements ClientModInitializer {
         }
     }
 
+    private static void ensureMultiAuraResolved() {
+        if (multiAuraHackCache != null || multiAuraResolutionAttempted) return;
+        multiAuraResolutionAttempted = true;
+        try {
+            Class<?> wurstClass = Class.forName("net.wurstclient.WurstClient");
+            Object wurstInstance = wurstClass.getField("INSTANCE").get(null);
+            Object hax = wurstClass.getMethod("getHax").invoke(wurstInstance);
+
+            Object multiAuraHack;
+            try {
+                Field field = hax.getClass().getField("multiAuraHack");
+                multiAuraHack = field.get(hax);
+            } catch (NoSuchFieldException e) {
+                multiAuraHack = hax.getClass().getMethod("getHackByName", String.class).invoke(hax, "MultiAura");
+            }
+
+            if (multiAuraHack == null) return;
+            multiAuraHackCache = multiAuraHack;
+            multiAuraIsEnabledMethodCache = multiAuraHack.getClass().getMethod("isEnabled");
+            multiAuraSetEnabledMethodCache = multiAuraHack.getClass().getMethod("setEnabled", boolean.class);
+        } catch (Throwable e) {
+            e.printStackTrace();
+        }
+    }
+
+    private static void enableMultiAura() {
+        ensureMultiAuraResolved();
+        setReachAndAutoSword(true);
+        try {
+            if (multiAuraHackCache != null && multiAuraIsEnabledMethodCache != null && multiAuraSetEnabledMethodCache != null) {
+                boolean enabled = (boolean) multiAuraIsEnabledMethodCache.invoke(multiAuraHackCache);
+                if (!enabled) {
+                    multiAuraSetEnabledMethodCache.invoke(multiAuraHackCache, true);
+                }
+            }
+        } catch (Throwable e) {
+            e.printStackTrace();
+        }
+    }
+
+    private static void disableMultiAura() {
+        ensureMultiAuraResolved();
+        try {
+            if (multiAuraHackCache != null && multiAuraSetEnabledMethodCache != null) {
+                multiAuraSetEnabledMethodCache.invoke(multiAuraHackCache, false);
+            }
+        } catch (Throwable e) {
+            e.printStackTrace();
+        }
+        setReachAndAutoSword(false);
+    }
+
+    private static void setReachAndAutoSword(boolean enabled) {
+        try {
+            Class<?> wurstClass = Class.forName("net.wurstclient.WurstClient");
+            Object wurstInstance = wurstClass.getField("INSTANCE").get(null);
+            Object hax = wurstClass.getMethod("getHax").invoke(wurstInstance);
+
+            Object autoSword = hax.getClass().getField("autoSwordHack").get(hax);
+            autoSword.getClass().getMethod("setEnabled", boolean.class).invoke(autoSword, enabled);
+
+            Object reach = hax.getClass().getField("reachHack").get(hax);
+            reach.getClass().getMethod("setEnabled", boolean.class).invoke(reach, enabled);
+        } catch (Throwable e) {
+            e.printStackTrace();
+        }
+    }
+
+    private static int countNearbyPlayers(MinecraftClient client, double radius) {
+        if (client.world == null || client.player == null) return 0;
+        double radiusSq = radius * radius;
+        int count = 0;
+        for (Entity e : client.world.getEntities()) {
+            if (e instanceof PlayerEntity && client.player.squaredDistanceTo(e) <= radiusSq) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private static double getNearestPlayerDistance(MinecraftClient client) {
+        if (client.world == null || client.player == null) return -1;
+        double min = Double.MAX_VALUE;
+        for (Entity e : client.world.getEntities()) {
+            if (e instanceof PlayerEntity && e != client.player) {
+                double d = client.player.squaredDistanceTo(e);
+                if (d < min) min = d;
+            }
+        }
+        return min == Double.MAX_VALUE ? -1 : Math.sqrt(min);
+    }
+
+    private static void configureMultiAuraForAbyss() {
+        ensureMultiAuraResolved();
+        if (multiAuraHackCache == null) return;
+
+        // 攻击范围拉到最大
+        try {
+            Field rangeField = multiAuraHackCache.getClass().getDeclaredField("range");
+            rangeField.setAccessible(true);
+            Object rangeSetting = rangeField.get(multiAuraHackCache);
+            rangeSetting.getClass().getMethod("setValue", double.class).invoke(rangeSetting, 10.0);
+        } catch (Throwable e) {
+            e.printStackTrace();
+        }
+
+        // 确保攻击玩家（filterPlayers=false 表示不过滤玩家；boss 是玩家实体，默认已是 false）
+        try {
+            Field fpField = multiAuraHackCache.getClass().getDeclaredField("filterPlayers");
+            fpField.setAccessible(true);
+            Object filterPlayers = fpField.get(multiAuraHackCache);
+            filterPlayers.getClass().getMethod("setChecked", boolean.class).invoke(filterPlayers, false);
+        } catch (Throwable e) {
+            e.printStackTrace();
+        }
+
+        // Reach 攻击距离拉到最大（Reach/AutoSword 开关由 enableMultiAura/disableMultiAura 统一控制）
+        try {
+            Class<?> wurstClass = Class.forName("net.wurstclient.WurstClient");
+            Object wurstInstance = wurstClass.getField("INSTANCE").get(null);
+            Object hax = wurstClass.getMethod("getHax").invoke(wurstInstance);
+
+            Object reach = hax.getClass().getField("reachHack").get(hax);
+            Field reachRangeField = reach.getClass().getDeclaredField("range");
+            reachRangeField.setAccessible(true);
+            Object reachRange = reachRangeField.get(reach);
+            reachRange.getClass().getMethod("setValue", double.class).invoke(reachRange, 10.0);
+        } catch (Throwable e) {
+            e.printStackTrace();
+        }
+    }
+
     private static void disableFlight(MinecraftClient client) {
         if (client.player != null) {
             if (client.player.getAbilities().flying) {
@@ -2286,20 +2444,6 @@ public class ExampleModClient implements ClientModInitializer {
                     break;
                 }
             }
-        }
-
-        if (!glassDebugPrinted) {
-            glassDebugPrinted = true;
-            StringBuilder sb = new StringBuilder("§7[魔塔助手] 碎玻璃诊断 玩家=");
-            sb.append(String.format("%.2f,%.2f,%.2f", client.player.getX(), client.player.getY(), client.player.getZ()));
-            for (int dy = 1; dy <= 4; dy++) {
-                BlockPos p = new BlockPos(px, py + dy, pz);
-                BlockState st = client.world.getBlockState(p);
-                sb.append(" | y+").append(dy).append("(").append(py + dy).append(")=")
-                  .append(st.isAir() ? "空气" : st.getBlock().getTranslationKey());
-            }
-            sb.append(" | 目标=").append(target == null ? "无" : target.toShortString());
-            client.player.sendMessage(Text.literal(sb.toString()), false);
         }
 
         if (target == null) return true; // 头顶无方块
@@ -2346,6 +2490,7 @@ public class ExampleModClient implements ClientModInitializer {
         abyssFightEnded = false;
         abyssStepTick = 0;
         abyssSubStep = 0;
+        disableMultiAura();
         resetFlightKeys(client);
         switchState(client, AutoState.IDLE);
         if (client.player != null) {
