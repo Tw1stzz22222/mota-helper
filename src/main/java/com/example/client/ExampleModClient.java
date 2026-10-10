@@ -14,6 +14,7 @@ import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.screen.ChatScreen;
+import net.minecraft.client.gui.screen.ingame.HandledScreen;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
 import net.minecraft.entity.Entity;
@@ -1895,8 +1896,9 @@ public class ExampleModClient implements ClientModInitializer {
             return;
         }
 
-        // 奖励终止条件：聊天收到「你还未挑战成功该层数」立即停止
+        // 奖励终止条件：聊天收到「你还未挑战成功该层数」按一次 E 关菜单后停止
         if (abyssRewardTerminate) {
+            if (client.currentScreen != null) client.setScreen(null);
             abyssStopAll(client);
             return;
         }
@@ -2066,8 +2068,8 @@ public class ExampleModClient implements ClientModInitializer {
                 if (abyssStepTick++ < 6) break;
                 abyssStepTick = 0;
 
-                int pagesToSkip = rewardN - 1;
-                if (rewardPageIndex < pagesToSkip) {
+                int targetPage = rewardN - 1;
+                if (rewardPageIndex < targetPage) {
                     // 需要先翻页到目标页
                     if (handler != null && clickSlotByKeyword(handler, client, "下一页")) {
                         rewardPageIndex++;
@@ -2078,7 +2080,7 @@ public class ExampleModClient implements ClientModInitializer {
 
                 if (findRewardSlot(client, handler, rewardTargetNumber) >= 0) {
                     // 找到目标数字，调用 Wurst steal 领取
-                    triggerWurstSteal();
+                    triggerWurstSteal(client, handler);
                     abyssStepTick = 0;
                     switchState(client, AutoState.ABYSS_RW_STEAL);
                 } else {
@@ -2090,7 +2092,7 @@ public class ExampleModClient implements ClientModInitializer {
 
             case ABYSS_RW_NEXT_PAGE:
                 // 每点一次下一页等待页面刷新后再扫描
-                if (abyssStepTick++ > 8) {
+                if (abyssStepTick++ > 15) {
                     abyssTo(client, AutoState.ABYSS_RW_SCAN);
                 }
                 break;
@@ -2098,11 +2100,19 @@ public class ExampleModClient implements ClientModInitializer {
             case ABYSS_RW_STEAL:
                 // 领取后等待服务器自动返回 NPC 菜单
                 abyssStepTick++;
-                if (abyssStepTick > 40) {
+                if (abyssStepTick > 60) {
+                    int justReceived = rewardN;
                     rewardN++;
                     rewardTargetNumber = rewardN * 25;
-                    client.player.sendMessage(Text.literal("§a[魔塔助手] 已领取 [" + (rewardN - 1) * 25 + "]，推进至下一个目标 [" + rewardTargetNumber + "]"), false);
-                    abyssTo(client, AutoState.ABYSS_RW_CLICK_REWARD);
+                    client.player.sendMessage(Text.literal("§a[魔塔助手] 已领取 [" + justReceived * 25 + "]，推进至下一个目标 [" + rewardTargetNumber + "]"), false);
+                    if (justReceived == 1) {
+                        // 第一页：重新点奖励领取打开界面
+                        abyssTo(client, AutoState.ABYSS_RW_CLICK_REWARD);
+                    } else {
+                        // 第二页起：steal 会回退一页，回 SCAN 重新翻页
+                        rewardPageIndex--;
+                        abyssTo(client, AutoState.ABYSS_RW_SCAN);
+                    }
                 }
                 break;
 
@@ -2271,34 +2281,27 @@ public class ExampleModClient implements ClientModInitializer {
 
     private static int findRewardSlot(MinecraftClient client, ScreenHandler handler, int targetNumber) {
         if (handler == null || client.player == null) return -1;
-        String target = String.valueOf(targetNumber);
+        java.util.regex.Pattern p = java.util.regex.Pattern.compile("(?<!\\d)" + targetNumber + "(?!\\d)");
         for (int i = 0; i < handler.slots.size(); i++) {
             ItemStack stack = handler.getSlot(i).getStack();
             if (stack.isEmpty()) continue;
-            if (stack.getName().getString().contains(target)) return i;
+            if (p.matcher(stack.getName().getString()).find()) return i;
             for (Text t : stack.getTooltip(Item.TooltipContext.DEFAULT, client.player, TooltipType.BASIC)) {
-                if (t.getString().contains(target)) return i;
+                if (p.matcher(t.getString()).find()) return i;
             }
         }
         return -1;
     }
 
-    private static void triggerWurstSteal() {
+    private static void triggerWurstSteal(MinecraftClient client, ScreenHandler handler) {
         try {
             Class<?> wurstClass = Class.forName("net.wurstclient.WurstClient");
             Object wurstInstance = wurstClass.getField("INSTANCE").get(null);
             Object hax = wurstClass.getMethod("getHax").invoke(wurstInstance);
-            Object stealHack = null;
-            try {
-                Field field = hax.getClass().getField("stealHack");
-                stealHack = field.get(hax);
-            } catch (NoSuchFieldException e) {
-                stealHack = hax.getClass().getMethod("getHackByName", String.class).invoke(hax, "Steal");
-            }
-            if (stealHack != null) {
-                Method setEnabled = stealHack.getClass().getMethod("setEnabled", boolean.class);
-                setEnabled.invoke(stealHack, true);
-            }
+            Object stealHack = hax.getClass().getField("autoStealHack").get(hax);
+            int rows = Math.max(1, (handler.slots.size() - 36) / 9);
+            Method steal = stealHack.getClass().getMethod("steal", HandledScreen.class, int.class);
+            steal.invoke(stealHack, client.currentScreen, rows);
         } catch (Throwable e) {
             e.printStackTrace();
         }
