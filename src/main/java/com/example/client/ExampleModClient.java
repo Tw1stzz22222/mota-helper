@@ -38,7 +38,9 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.lang.reflect.Method;
 import java.lang.reflect.Field;
+import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -60,6 +62,7 @@ public class ExampleModClient implements ClientModInitializer {
     private static final List<Text> bossNoticeHistory = Collections.synchronizedList(new ArrayList<>());
     private static final int MAX_BOSS_NOTICE_LINES = 7;
     private static boolean filterRewardMessages = true; // 是否开启 [仓库] 屏蔽
+    private static final String QQ_BRIDGE_URL = "http://127.0.0.1:25590/"; // 桥接脚本的游戏消息接收端口
 
     public enum TargetFloor {
         F10C(new BlockPos(-12, 164, -73), new Vec3d(-14.0, 163.0, -74.0), "第十层", false, 0),
@@ -458,6 +461,33 @@ public class ExampleModClient implements ClientModInitializer {
         return 0;
     }
 
+    // 方向二:把游戏里的聊天消息 POST 给桥接脚本(127.0.0.1:25590),由脚本转发到 QQ 群
+    private static void postToQQBridge(String message) {
+        new Thread(() -> {
+            HttpURLConnection conn = null;
+            try {
+                conn = (HttpURLConnection) new URL(QQ_BRIDGE_URL).openConnection();
+                conn.setRequestMethod("POST");
+                conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+                conn.setDoOutput(true);
+                conn.setConnectTimeout(2000);
+                conn.setReadTimeout(2000);
+                JsonObject body = new JsonObject();
+                body.addProperty("message", message);
+                try (OutputStream os = conn.getOutputStream()) {
+                    os.write(body.toString().getBytes(StandardCharsets.UTF_8));
+                }
+                conn.getResponseCode();
+            } catch (Exception ignored) {
+                // 桥接脚本未启动时静默失败，避免刷屏
+            } finally {
+                if (conn != null) {
+                    conn.disconnect();
+                }
+            }
+        }).start();
+    }
+
     @Override
     public void onInitializeClient() {
         // 1. 启动 QQ 转发的内置 HTTP 服务器 (支持多人服务器全局广播，并去除了前缀)
@@ -525,6 +555,7 @@ public class ExampleModClient implements ClientModInitializer {
 
             if (isPlayerChat) {
                 playerChatHistory.add(text);
+                postToQQBridge(cleanMsg);
                 if (playerChatHistory.size() > MAX_PLAYER_CHAT_LINES) {
                     playerChatHistory.remove(0);
                 }
