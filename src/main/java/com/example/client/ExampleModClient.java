@@ -2066,7 +2066,14 @@ public class ExampleModClient implements ClientModInitializer {
                 // 等待传送进入挑战场景（菜单关闭 + 缓冲）
                 abyssStepTick++;
                 if (!isMenuOpen(client) && abyssStepTick > 40) {
-                    abyssTo(client, AutoState.ABYSS_CH_WALK_1);
+                    // 进入场景后、打玻璃前：若身边仍有深渊 NPC，说明未正确进入战斗场景，重新执行点 NPC 挑战流程
+                    Entity npc = findAbyssNpc(client);
+                    if (npc != null && npc.squaredDistanceTo(client.player) <= 10.0 * 10.0) {
+                        client.player.sendMessage(Text.literal("§c[魔塔助手] 未正确进入战斗场景，重新点击 NPC 开始挑战..."), false);
+                        abyssTo(client, AutoState.ABYSS_CLICK_NPC);
+                    } else {
+                        abyssTo(client, AutoState.ABYSS_CH_WALK_1);
+                    }
                 }
                 break;
 
