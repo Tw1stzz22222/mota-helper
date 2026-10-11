@@ -19,3 +19,8 @@ Thumbs.db
 
 # Local backup files
 *.bak*
+
+# NapCat 运行环境（含账号凭证，勿提交）
+NapCat.Shell/
+__pycache__/
+*.pyc
