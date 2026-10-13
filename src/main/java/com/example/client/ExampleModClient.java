@@ -64,19 +64,39 @@ public class ExampleModClient implements ClientModInitializer {
     private static boolean filterRewardMessages = true; // 是否开启 [仓库] 屏蔽
     private static final String QQ_BRIDGE_URL = "http://127.0.0.1:25590/"; // 桥接脚本的游戏消息接收端口
 
+    // --- 7c 跑刷常量 ---
+    public static final String[] SEVEN_C_LINES = {
+            "一线", "二线", "三线", "四线", "五线", "六线", "七线", "八线", "九线", "十线",
+            "十一线", "十二线", "十三线", "十四线", "十五线", "十六线", "十七线", "十八线", "十九线", "二十线",
+            "二十一线", "二十二线", "二十三线", "二十四线", "二十五线"
+    };
+    private static final List<Vec3d> SEVEN_C_WAYPOINTS = Arrays.asList(
+            new Vec3d(647, 195, -1209),
+            new Vec3d(633, 221, -1050),
+            new Vec3d(555, 202, -1049),
+            new Vec3d(477, 190, -1012),
+            new Vec3d(383, 241, -967),
+            new Vec3d(351, 236, -1012)
+    );
+    private static final boolean[] SEVEN_C_WAIT_5S = { false, false, false, true, false, true };
+    private static final int SEVEN_C_POINT_WAIT_SECONDS = 20;
+    private static final String SEVEN_C_LINE_PREFIX = "传送新增第七层";
+
     public enum TargetFloor {
         F10C(new BlockPos(-12, 164, -73), new Vec3d(-14.0, 163.0, -74.0), "第十层", false, 0),
         F11C(new BlockPos(-12, 174, -73), new Vec3d(-14.0, 173.0, -74.0), "第十一层", false, 0),
         F12C(new BlockPos(-12, 184, -73), new Vec3d(-14.0, 183.0, -74.0), "第十二层", false, 0),
         F13C("第十三层", 0),
         F14C("第十四层", 2),
-        F15C("第十五层", 4);
+        F15C("第十五层", 4),
+        F7C("第七层");
 
         private final BlockPos signPos;
         private final Vec3d navPos;
         private final String floorNameCN;
         private final boolean isSpecialMenu;
         private final int menuSlotIndex;
+        private final boolean isSevenC;
 
         TargetFloor(BlockPos signPos, Vec3d navPos, String floorNameCN, boolean isSpecialMenu, int menuSlotIndex) {
             this.signPos = signPos;
@@ -84,10 +104,25 @@ public class ExampleModClient implements ClientModInitializer {
             this.floorNameCN = floorNameCN;
             this.isSpecialMenu = isSpecialMenu;
             this.menuSlotIndex = menuSlotIndex;
+            this.isSevenC = false;
         }
 
         TargetFloor(String floorNameCN, int menuSlotIndex) {
             this(DEFAULT_HIGH_FLOOR_SIGN, DEFAULT_HIGH_FLOOR_NAV, floorNameCN, true, menuSlotIndex);
+        }
+
+        // 7c 专用：25 条线，无告示牌/导航点
+        TargetFloor(String floorNameCN) {
+            this(null, null, floorNameCN, false, 0, true);
+        }
+
+        TargetFloor(BlockPos signPos, Vec3d navPos, String floorNameCN, boolean isSpecialMenu, int menuSlotIndex, boolean isSevenC) {
+            this.signPos = signPos;
+            this.navPos = navPos;
+            this.floorNameCN = floorNameCN;
+            this.isSpecialMenu = isSpecialMenu;
+            this.menuSlotIndex = menuSlotIndex;
+            this.isSevenC = isSevenC;
         }
 
         public BlockPos getSignPos() { return signPos; }
@@ -95,6 +130,7 @@ public class ExampleModClient implements ClientModInitializer {
         public String getFloorNameCN() { return floorNameCN; }
         public boolean isSpecialMenu() { return isSpecialMenu; }
         public int getMenuSlotIndex() { return menuSlotIndex; }
+        public boolean isSevenC() { return isSevenC; }
     }
 
     private enum AutoState {
@@ -189,7 +225,17 @@ public class ExampleModClient implements ClientModInitializer {
         ABYSS_RW_SCAN("深渊奖励-扫描目标数字"),
         ABYSS_RW_CLOSE_RETRY("深渊奖励-关闭菜单重试"),
         ABYSS_RW_NEXT_PAGE("深渊奖励-翻下一页"),
-        ABYSS_RW_STEAL("深渊奖励-调用Steal领取");
+        ABYSS_RW_STEAL("深渊奖励-调用Steal领取"),
+
+        // --- 7c 跑刷 ---
+        SEVEN_WAIT_MAIN_MENU("7c-等待主菜单(魔塔副本)"),
+        SEVEN_WAIT_CHAPTER_MENU("7c-等待魔塔第一章"),
+        SEVEN_WAIT_LAYER_MENU("7c-等待25条7层菜单"),
+        SEVEN_WAIT_TELEPORT_MENU("7c-等待传送第7层菜单"),
+        SEVEN_WAIT_LINE_MENU("7c-等待分线菜单"),
+        SEVEN_ENTER_SCENE("7c-等待进入场景"),
+        SEVEN_FLIGHT("7c-飞行路线中"),
+        SEVEN_NEXT_LINE("7c-推进下一条线");
 
         private final String desc;
         AutoState(String desc) { this.desc = desc; }
@@ -221,6 +267,21 @@ public class ExampleModClient implements ClientModInitializer {
     private static boolean abyssPlayerCountStopped = false;        // 检测到仅剩最后一个 Boss 后，停止周围玩家统计
     private static final int MULTI_AURA_CHECK_INTERVAL = 20;      // 1 秒 = 20 tick
     private static final double MULTI_AURA_CHECK_RADIUS = 15.0;   // 半径 15 格
+
+    // --- 7c 跑刷状态 ---
+    private static boolean sevenCMode = false;
+    private static int sevenCLineIndex = 0;
+    private static int sevenCLineStart = 0;
+    private static int sevenCLineEnd = SEVEN_C_LINES.length - 1;
+    private static int sevenCWaypointIndex = 0;
+    private static int sevenCRouteSubStep = 0;   // 0=发goto 1=等到达 2=等5s
+    private static int sevenCMenuTick = 0;
+    private static int sevenCWaitTick = 0;
+    private static boolean sevenCKillDetected = false;   // 到达等待点后监听"成功击杀"
+    // 7c 飞行期间开启 Wurst Timer 加速
+    private static Object timerHackCache = null;
+    private static Method timerSetEnabledMethodCache = null;
+    private static boolean timerResolutionAttempted = false;
 
     private static TargetFloor selectedFloor = TargetFloor.F10C;
     private static String selectedTownLine = "魔塔一区";
@@ -604,6 +665,9 @@ public class ExampleModClient implements ClientModInitializer {
                     bossKillCount++;
                 }
             }
+            if (sevenCMode && cleanMsg.contains("成功击杀")) {
+                sevenCKillDetected = true;
+            }
             if (cleanMsg.contains("请选择传送的子服") || cleanMsg.contains("连接已断开") || cleanMsg.contains("被踢出") || cleanMsg.contains("正在匹配") || cleanMsg.contains("登录大厅")) {
                 if (currentState != AutoState.IDLE && currentState != AutoState.PAUSED) {
                     switchState(MinecraftClient.getInstance(), AutoState.WAIT_LOBBY_TELEPORT);
@@ -678,7 +742,7 @@ public class ExampleModClient implements ClientModInitializer {
             client.options.pauseOnLostFocus = false;
 
             while (testKeyBinding.wasPressed()) {
-                if (abyssMode) continue;
+                if (abyssMode || sevenCMode) continue;
                 client.setScreen(new FloorSelectScreen());
             }
 
@@ -687,13 +751,14 @@ public class ExampleModClient implements ClientModInitializer {
                 abyssRewardMode = false;
                 abyssRewardTerminate = false;
                 abyssFightEnded = false;
+                sevenCMode = false;
                 disableMultiAura();
                 switchState(client, AutoState.IDLE);
                 client.player.sendMessage(Text.literal("§c[魔塔助手] 收到 '=' 键信号，程序已彻底强制停止！"), false);
             }
 
             while (pauseOrNextKeyBinding.wasPressed()) {
-                if (abyssMode) continue;
+                if (abyssMode || sevenCMode) continue;
                 if (currentState != AutoState.PAUSED && currentState != AutoState.IDLE) {
                     switchState(client, AutoState.PAUSED);
                     client.player.sendMessage(Text.literal("§e[魔塔助手] 当前流程已暂停。再次按下 '-' 键将直接跳过当前，跳转并开始下一个循环！"), false);
@@ -707,6 +772,11 @@ public class ExampleModClient implements ClientModInitializer {
 
             if (abyssMode) {
                 handleAbyssTick(client);
+                return;
+            }
+
+            if (sevenCMode) {
+                handleSevenCTick(client);
                 return;
             }
 
@@ -2539,5 +2609,229 @@ public class ExampleModClient implements ClientModInitializer {
         if (client.player != null) {
             client.player.sendMessage(Text.literal("§c[魔塔助手] 深渊自动化已终止！"), false);
         }
+    }
+
+    // ============================================================
+    // 7c 跑刷自动化
+    // ============================================================
+
+    public static void startSevenC(int startLine, int endLine) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player == null) return;
+        abyssMode = false;
+        abyssRewardMode = false;
+        sevenCMode = true;
+        sevenCLineStart = Math.max(0, Math.min(startLine, SEVEN_C_LINES.length - 1));
+        sevenCLineEnd = Math.max(0, Math.min(endLine, SEVEN_C_LINES.length - 1));
+        sevenCLineIndex = sevenCLineStart;
+        sevenCWaypointIndex = 0;
+        sevenCRouteSubStep = 0;
+        sevenCMenuTick = 0;
+        sevenCWaitTick = 0;
+        setFlightSpeeds();
+        if (client.currentScreen != null) client.setScreen(null);
+        switchState(client, AutoState.SEVEN_WAIT_MAIN_MENU);
+        client.player.networkHandler.sendChatMessage("/menu");
+        client.player.sendMessage(Text.literal(String.format("§b[魔塔助手] 启动 7c 跑刷 -> 起始线:§e%s §b| 结束线:§e%s",
+                SEVEN_C_LINES[sevenCLineStart], SEVEN_C_LINES[sevenCLineEnd])), false);
+    }
+
+    private static void startSevenCNav(MinecraftClient client) {
+        sevenCWaypointIndex = 0;
+        sevenCRouteSubStep = 0;
+        sevenCMenuTick = 0;
+        sevenCWaitTick = 0;
+        if (client.currentScreen != null) client.setScreen(null);
+        switchState(client, AutoState.SEVEN_WAIT_MAIN_MENU);
+        client.player.networkHandler.sendChatMessage("/menu");
+    }
+
+    private static void handleSevenCTick(MinecraftClient client) {
+        if (client.player == null || client.world == null) return;
+
+        // 外部逻辑（如防踢）可能把状态切到非 7c 状态，检测到后自动重启 7c 导航
+        if (!currentState.name().startsWith("SEVEN")) {
+            startSevenCNav(client);
+            return;
+        }
+
+        ScreenHandler handler = client.player.currentScreenHandler;
+
+        switch (currentState) {
+            case SEVEN_WAIT_MAIN_MENU:
+                sevenCClickMenu(client, "魔塔副本", AutoState.SEVEN_WAIT_CHAPTER_MENU);
+                break;
+            case SEVEN_WAIT_CHAPTER_MENU:
+                sevenCClickMenu(client, "魔塔第一章", AutoState.SEVEN_WAIT_LAYER_MENU);
+                break;
+            case SEVEN_WAIT_LAYER_MENU:
+                sevenCClickMenu(client, "25条7层", AutoState.SEVEN_WAIT_TELEPORT_MENU);
+                break;
+            case SEVEN_WAIT_TELEPORT_MENU:
+                sevenCClickMenu(client, "传送第7层", AutoState.SEVEN_WAIT_LINE_MENU);
+                break;
+            case SEVEN_WAIT_LINE_MENU:
+                sevenCMenuTick++;
+                if (sevenCMenuTick < 12) break;
+                if (handler != null && clickSevenCLine(handler, client, SEVEN_C_LINES[sevenCLineIndex])) {
+                    sevenCMenuTick = 0;
+                    switchState(client, AutoState.SEVEN_ENTER_SCENE);
+                    client.player.sendMessage(Text.literal("§a[魔塔助手] 已选择 7c [" + SEVEN_C_LINES[sevenCLineIndex] + "]，等待进入场景..."), false);
+                } else if (sevenCMenuTick > 200) {
+                    sevenCMenuTick = 0;
+                    client.player.sendMessage(Text.literal("§c[魔塔助手] 7c 未找到分线 [" + SEVEN_C_LINES[sevenCLineIndex] + "]，重新导航..."), false);
+                    startSevenCNav(client);
+                }
+                break;
+            case SEVEN_ENTER_SCENE:
+                sevenCMenuTick++;
+                if (!isMenuOpen(client) && sevenCMenuTick > 40) {
+                    sevenCMenuTick = 0;
+                    ensureFlying(client);
+                    setTimer(true);
+                    sevenCWaypointIndex = 0;
+                    sevenCRouteSubStep = 0;
+                    switchState(client, AutoState.SEVEN_FLIGHT);
+                    client.player.sendMessage(Text.literal("§a[魔塔助手] 7c 进入 [" + SEVEN_C_LINES[sevenCLineIndex] + "]，开启飞行开始路线..."), false);
+                }
+                break;
+            case SEVEN_FLIGHT:
+                handleSevenCFlight(client);
+                break;
+            case SEVEN_NEXT_LINE:
+                sevenCMenuTick++;
+                if (sevenCMenuTick > 20) {
+                    sevenCMenuTick = 0;
+                    advanceSevenCLine(client);
+                }
+                break;
+            default:
+                break;
+        }
+    }
+
+    private static void sevenCClickMenu(MinecraftClient client, String keyword, AutoState next) {
+        sevenCMenuTick++;
+        if (sevenCMenuTick < 12) return;
+        ScreenHandler handler = client.player.currentScreenHandler;
+        if (handler != null && clickSlotByKeyword(handler, client, keyword)) {
+            sevenCMenuTick = 0;
+            switchState(client, next);
+            return;
+        }
+        if (sevenCMenuTick > 200) {
+            client.player.sendMessage(Text.literal("§c[魔塔助手] 7c 菜单导航超时（未找到 [" + keyword + "]），重新发送 /menu..."), false);
+            sevenCMenuTick = 0;
+            if (client.currentScreen != null) client.setScreen(null);
+            switchState(client, AutoState.SEVEN_WAIT_MAIN_MENU);
+            client.player.networkHandler.sendChatMessage("/menu");
+        }
+    }
+
+    // 分线格子名带前缀（如「传送新增第七层一线」），用前缀+线名做 contains 匹配即可精确命中
+    private static boolean clickSevenCLine(ScreenHandler handler, MinecraftClient client, String lineName) {
+        if (client.interactionManager == null || client.player == null || lineName == null || lineName.isEmpty()) return false;
+        String fullName = SEVEN_C_LINE_PREFIX + lineName;
+        for (int i = 0; i < handler.slots.size(); i++) {
+            ItemStack stack = handler.getSlot(i).getStack();
+            if (!stack.isEmpty()) {
+                String name = stripColorCodes(stack.getName());
+                if (name.contains(fullName)) {
+                    client.interactionManager.clickSlot(handler.syncId, i, 0, SlotActionType.PICKUP, client.player);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static void handleSevenCFlight(MinecraftClient client) {
+        Vec3d playerPos = client.player.getPos();
+
+        if (sevenCRouteSubStep == 0) {
+            Vec3d target = SEVEN_C_WAYPOINTS.get(sevenCWaypointIndex);
+            executeWurstCommandDirectly(String.format("goto %.0f %.0f %.0f", target.x, target.y, target.z));
+            sevenCRouteSubStep = 1;
+            sevenCWaitTick = 0;
+            return;
+        }
+
+        if (sevenCRouteSubStep == 1) {
+            Vec3d target = SEVEN_C_WAYPOINTS.get(sevenCWaypointIndex);
+            sevenCWaitTick++;
+            if (isArrived(playerPos, target, ARRIVE_DISTANCE) || sevenCWaitTick > 400) {
+                if (SEVEN_C_WAIT_5S[sevenCWaypointIndex]) {
+                    sevenCRouteSubStep = 2;
+                    sevenCWaitTick = 0;
+                    sevenCKillDetected = false;
+                } else {
+                    advanceSevenCWaypoint(client);
+                }
+            }
+            return;
+        }
+
+        // subStep == 2：到达后等待，监听"成功击杀"或超时
+        sevenCWaitTick++;
+        if (sevenCKillDetected || sevenCWaitTick >= SEVEN_C_POINT_WAIT_SECONDS * 20) {
+            advanceSevenCWaypoint(client);
+        }
+    }
+
+    private static void advanceSevenCWaypoint(MinecraftClient client) {
+        sevenCWaypointIndex++;
+        if (sevenCWaypointIndex >= SEVEN_C_WAYPOINTS.size()) {
+            resetFlightKeys(client);
+            disableFlight(client);
+            setTimer(false);
+            client.player.sendMessage(Text.literal("§a[魔塔助手] 7c [" + SEVEN_C_LINES[sevenCLineIndex] + "] 路线完成，关闭飞行，准备切换下一条线..."), false);
+            sevenCMenuTick = 0;
+            switchState(client, AutoState.SEVEN_NEXT_LINE);
+        } else {
+            sevenCRouteSubStep = 0;
+            sevenCWaitTick = 0;
+        }
+    }
+
+    private static void ensureTimerHackResolved() {
+        if (timerHackCache != null || timerResolutionAttempted) return;
+        timerResolutionAttempted = true;
+        try {
+            Class<?> wurstClass = Class.forName("net.wurstclient.WurstClient");
+            Object wurstInstance = wurstClass.getField("INSTANCE").get(null);
+            Object hax = wurstClass.getMethod("getHax").invoke(wurstInstance);
+
+            Object timerHack;
+            try {
+                Field field = hax.getClass().getField("timerHack");
+                timerHack = field.get(hax);
+            } catch (NoSuchFieldException e) {
+                timerHack = hax.getClass().getMethod("getHackByName", String.class).invoke(hax, "Timer");
+            }
+
+            if (timerHack == null) return;
+            timerHackCache = timerHack;
+            timerSetEnabledMethodCache = timerHack.getClass().getMethod("setEnabled", boolean.class);
+        } catch (Throwable e) {
+            e.printStackTrace();
+        }
+    }
+
+    private static void setTimer(boolean enabled) {
+        ensureTimerHackResolved();
+        try {
+            if (timerHackCache != null && timerSetEnabledMethodCache != null) {
+                timerSetEnabledMethodCache.invoke(timerHackCache, enabled);
+            }
+        } catch (Throwable e) {
+            e.printStackTrace();
+        }
+    }
+
+    private static void advanceSevenCLine(MinecraftClient client) {
+        boolean rangeWrapped = (sevenCLineIndex == sevenCLineEnd);
+        sevenCLineIndex = rangeWrapped ? sevenCLineStart : (sevenCLineIndex + 1) % SEVEN_C_LINES.length;
+        client.player.sendMessage(Text.literal("§e[循环系统] 推进至下一条线: §b" + SEVEN_C_LINES[sevenCLineIndex]), false);
+        startSevenCNav(client);
     }
 }
