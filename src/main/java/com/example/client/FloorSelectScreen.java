@@ -13,6 +13,8 @@ public class FloorSelectScreen extends Screen {
     private boolean cycleDelayEnabled = false;
     private int cycleDelaySeconds = 30;
     private int abyssMaxCycles = 0;
+    private int sevenCStartIdx = 0;
+    private int sevenCEndIdx = ExampleModClient.SEVEN_C_LINES.length - 1;
 
     private static final ExampleModClient.TargetFloor[] FLOORS = ExampleModClient.TargetFloor.values();
     private static final String[] TOWNS = {
@@ -36,52 +38,73 @@ public class FloorSelectScreen extends Screen {
                 .dimensions(cx - 100, y, 200, 20)
                 .build());
 
-        addDrawableChild(ButtonWidget.builder(
-                        Text.literal("起始镇线: §b" + TOWNS[townIndex] + " §8(" + (townIndex + 1) + ")"),
-                        b -> { townIndex = (townIndex + 1) % TOWNS.length; this.clearAndInit(); })
-                .dimensions(cx - 100, y + 24, 200, 20)
-                .build());
+        if (FLOORS[floorIndex].isSevenC()) {
+            // 7c：25 条线
+            addDrawableChild(ButtonWidget.builder(
+                            Text.literal("起始线: §b" + ExampleModClient.SEVEN_C_LINES[sevenCStartIdx] + " §8(" + (sevenCStartIdx + 1) + ")"),
+                            b -> { sevenCStartIdx = (sevenCStartIdx + 1) % ExampleModClient.SEVEN_C_LINES.length; this.clearAndInit(); })
+                    .dimensions(cx - 100, y + 24, 200, 20)
+                    .build());
 
-        addDrawableChild(ButtonWidget.builder(
-                        Text.literal("结束镇线: §b" + TOWNS[townEndIndex] + " §8(" + (townEndIndex + 1) + ")"),
-                        b -> { townEndIndex = (townEndIndex + 1) % TOWNS.length; this.clearAndInit(); })
-                .dimensions(cx - 100, y + 48, 200, 20)
-                .build());
+            addDrawableChild(ButtonWidget.builder(
+                            Text.literal("结束线: §b" + ExampleModClient.SEVEN_C_LINES[sevenCEndIdx] + " §8(" + (sevenCEndIdx + 1) + ")"),
+                            b -> { sevenCEndIdx = (sevenCEndIdx + 1) % ExampleModClient.SEVEN_C_LINES.length; this.clearAndInit(); })
+                    .dimensions(cx - 100, y + 48, 200, 20)
+                    .build());
 
-        addDrawableChild(ButtonWidget.builder(
-                        Text.literal("分线: §a" + COPY_LINES[copyIndex]),
-                        b -> { copyIndex = (copyIndex + 1) % COPY_LINES.length; this.clearAndInit(); })
-                .dimensions(cx - 100, y + 72, 200, 20)
-                .build());
+            addDrawableChild(ButtonWidget.builder(
+                            Text.literal("§a§l开始 7c 跑刷"),
+                            b -> { ExampleModClient.startSevenC(sevenCStartIdx, sevenCEndIdx); this.close(); })
+                    .dimensions(cx - 100, y + 80, 200, 20)
+                    .build());
+        } else {
+            addDrawableChild(ButtonWidget.builder(
+                            Text.literal("起始镇线: §b" + TOWNS[townIndex] + " §8(" + (townIndex + 1) + ")"),
+                            b -> { townIndex = (townIndex + 1) % TOWNS.length; this.clearAndInit(); })
+                    .dimensions(cx - 100, y + 24, 200, 20)
+                    .build());
 
-        addDrawableChild(ButtonWidget.builder(
-                        Text.literal("抢线: " + (autoSwitch ? "§a开启" : "§c关闭")),
-                        b -> { autoSwitch = !autoSwitch; this.clearAndInit(); })
-                .dimensions(cx - 100, y + 96, 200, 20)
-                .build());
+            addDrawableChild(ButtonWidget.builder(
+                            Text.literal("结束镇线: §b" + TOWNS[townEndIndex] + " §8(" + (townEndIndex + 1) + ")"),
+                            b -> { townEndIndex = (townEndIndex + 1) % TOWNS.length; this.clearAndInit(); })
+                    .dimensions(cx - 100, y + 48, 200, 20)
+                    .build());
 
-        addDrawableChild(ButtonWidget.builder(
-                        Text.literal("循环间隔: " + (cycleDelayEnabled ? "§a开启" : "§c关闭")),
-                        b -> { cycleDelayEnabled = !cycleDelayEnabled; this.clearAndInit(); })
-                .dimensions(cx - 100, y + 120, 200, 20)
-                .build());
+            addDrawableChild(ButtonWidget.builder(
+                            Text.literal("分线: §a" + COPY_LINES[copyIndex]),
+                            b -> { copyIndex = (copyIndex + 1) % COPY_LINES.length; this.clearAndInit(); })
+                    .dimensions(cx - 100, y + 72, 200, 20)
+                    .build());
 
-        addDrawableChild(ButtonWidget.builder(
-                        Text.literal("间隔秒数: §b" + cycleDelaySeconds + " §8秒"),
-                        b -> { cycleDelaySeconds = (cycleDelaySeconds >= 180) ? 30 : cycleDelaySeconds + 30; this.clearAndInit(); })
-                .dimensions(cx - 100, y + 144, 200, 20)
-                .build());
+            addDrawableChild(ButtonWidget.builder(
+                            Text.literal("抢线: " + (autoSwitch ? "§a开启" : "§c关闭")),
+                            b -> { autoSwitch = !autoSwitch; this.clearAndInit(); })
+                    .dimensions(cx - 100, y + 96, 200, 20)
+                    .build());
 
-        addDrawableChild(ButtonWidget.builder(
-                        Text.literal("§a§l开始自动化"),
-                        b -> {
-                            ExampleModClient.startFullAutomation(
-                                    FLOORS[floorIndex], townIndex, townEndIndex, COPY_LINES[copyIndex], autoSwitch,
-                                    cycleDelayEnabled, cycleDelaySeconds);
-                            this.close();
-                        })
-                .dimensions(cx - 100, y + 176, 200, 20)
-                .build());
+            addDrawableChild(ButtonWidget.builder(
+                            Text.literal("循环间隔: " + (cycleDelayEnabled ? "§a开启" : "§c关闭")),
+                            b -> { cycleDelayEnabled = !cycleDelayEnabled; this.clearAndInit(); })
+                    .dimensions(cx - 100, y + 120, 200, 20)
+                    .build());
+
+            addDrawableChild(ButtonWidget.builder(
+                            Text.literal("间隔秒数: §b" + cycleDelaySeconds + " §8秒"),
+                            b -> { cycleDelaySeconds = (cycleDelaySeconds >= 180) ? 30 : cycleDelaySeconds + 30; this.clearAndInit(); })
+                    .dimensions(cx - 100, y + 144, 200, 20)
+                    .build());
+
+            addDrawableChild(ButtonWidget.builder(
+                            Text.literal("§a§l开始自动化"),
+                            b -> {
+                                ExampleModClient.startFullAutomation(
+                                        FLOORS[floorIndex], townIndex, townEndIndex, COPY_LINES[copyIndex], autoSwitch,
+                                        cycleDelayEnabled, cycleDelaySeconds);
+                                this.close();
+                            })
+                    .dimensions(cx - 100, y + 176, 200, 20)
+                    .build());
+        }
 
         addDrawableChild(ButtonWidget.builder(
                         Text.literal("深渊挑战次数: " + (abyssMaxCycles == 0 ? "§e无限" : "§b" + abyssMaxCycles)),
