@@ -832,7 +832,7 @@ public class ExampleModClient implements ClientModInitializer {
             drawContext.drawTextWithShadow(client.textRenderer, Text.literal("目标分线: §b" + lineInfo), statusX, statusY + 36, 0xFFFFFF);
 
             int chatWidth = 420;
-            int chatX = 5;
+            int chatX = screenWidth - chatWidth - 5;
             int chatY = statusY + 50;
             int displayLines = playerChatHistory.isEmpty() ? 1 : playerChatHistory.size();
             int chatHeight = 14 + displayLines * 10;
