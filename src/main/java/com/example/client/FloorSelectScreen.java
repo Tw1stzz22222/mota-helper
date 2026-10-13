@@ -21,10 +21,15 @@ public class FloorSelectScreen extends Screen {
             "魔塔一区", "魔塔二线", "魔塔三线", "魔塔四线", "魔塔五线",
             "魔塔六线", "魔塔七线", "魔塔八线", "魔塔九线", "魔塔十线"
     };
-    private static final String[] COPY_LINES = {"一线", "A1", "A2", "A3"};
 
     public FloorSelectScreen() {
         super(Text.literal("魔塔助手 - 选择目标"));
+    }
+
+    private String[] getCopyLines() {
+        return FLOORS[floorIndex].isEightC()
+                ? new String[]{"一线", "A1", "A2", "A3", "PVP"}
+                : new String[]{"一线", "A1", "A2", "A3"};
     }
 
     @Override
@@ -34,7 +39,7 @@ public class FloorSelectScreen extends Screen {
 
         addDrawableChild(ButtonWidget.builder(
                         Text.literal("楼层: §e" + FLOORS[floorIndex].getFloorNameCN()),
-                        b -> { floorIndex = (floorIndex + 1) % FLOORS.length; this.clearAndInit(); })
+                        b -> { floorIndex = (floorIndex + 1) % FLOORS.length; copyIndex = 0; this.clearAndInit(); })
                 .dimensions(cx - 100, y, 200, 20)
                 .build());
 
@@ -58,6 +63,8 @@ public class FloorSelectScreen extends Screen {
                     .dimensions(cx - 100, y + 80, 200, 20)
                     .build());
         } else {
+            String[] copyLines = getCopyLines();
+            int ci = Math.min(copyIndex, copyLines.length - 1);
             addDrawableChild(ButtonWidget.builder(
                             Text.literal("起始镇线: §b" + TOWNS[townIndex] + " §8(" + (townIndex + 1) + ")"),
                             b -> { townIndex = (townIndex + 1) % TOWNS.length; this.clearAndInit(); })
@@ -71,8 +78,8 @@ public class FloorSelectScreen extends Screen {
                     .build());
 
             addDrawableChild(ButtonWidget.builder(
-                            Text.literal("分线: §a" + COPY_LINES[copyIndex]),
-                            b -> { copyIndex = (copyIndex + 1) % COPY_LINES.length; this.clearAndInit(); })
+                            Text.literal("分线: §a" + copyLines[ci]),
+                            b -> { copyIndex = (copyIndex + 1) % copyLines.length; this.clearAndInit(); })
                     .dimensions(cx - 100, y + 72, 200, 20)
                     .build());
 
@@ -98,7 +105,7 @@ public class FloorSelectScreen extends Screen {
                             Text.literal("§a§l开始自动化"),
                             b -> {
                                 ExampleModClient.startFullAutomation(
-                                        FLOORS[floorIndex], townIndex, townEndIndex, COPY_LINES[copyIndex], autoSwitch,
+                                        FLOORS[floorIndex], townIndex, townEndIndex, copyLines[ci], autoSwitch,
                                         cycleDelayEnabled, cycleDelaySeconds);
                                 this.close();
                             })
