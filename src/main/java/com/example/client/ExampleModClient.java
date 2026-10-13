@@ -47,6 +47,8 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class ExampleModClient implements ClientModInitializer {
     private static KeyBinding testKeyBinding;
@@ -58,9 +60,9 @@ public class ExampleModClient implements ClientModInitializer {
 
     // --- 玩家独立聊天悬浮框数据 ---
     private static final List<Text> playerChatHistory = Collections.synchronizedList(new ArrayList<>());
-    private static final int MAX_PLAYER_CHAT_LINES = 7;
-    private static final List<Text> bossNoticeHistory = Collections.synchronizedList(new ArrayList<>());
-    private static final int MAX_BOSS_NOTICE_LINES = 7;
+    private static final int MAX_PLAYER_CHAT_LINES = 10;
+    private static final List<String> bossNoticeHistory = Collections.synchronizedList(new ArrayList<>());
+    private static final int MAX_BOSS_NOTICE_LINES = 16;
     private static boolean filterRewardMessages = true; // 是否开启 [仓库] 屏蔽
     private static final String QQ_BRIDGE_URL = "http://127.0.0.1:25590/"; // 桥接脚本的游戏消息接收端口
 
@@ -86,8 +88,8 @@ public class ExampleModClient implements ClientModInitializer {
     private static final String EIGHT_C_NPC_KEYWORD = "八层";
     private static final int EIGHT_C_POINT_WAIT_SECONDS = 20;   // KILL 点监听"成功击杀"的兜底等待
     private static final List<Vec3d> EIGHT_C_APPROACH = Arrays.asList(
-            new Vec3d(-12, 31, 45),
-            new Vec3d(-12, 187, 45),
+            new Vec3d(-12, 32, 53),
+            new Vec3d(-12, 187, 53),
             new Vec3d(-12, 187, -59)
     );
 
@@ -629,6 +631,46 @@ public class ExampleModClient implements ClientModInitializer {
         }).start();
     }
 
+    // 从头目公告原文中提取 线路 / 层数 / 坐标，压缩成一行短摘要
+    private static String extractBossSummary(String msg) {
+        StringBuilder sb = new StringBuilder();
+
+        Matcher line = Pattern.compile("(\\d+)线").matcher(msg);
+        if (line.find()) sb.append(line.group(1)).append("线");
+
+        Matcher floor = Pattern.compile("F\\s*(\\d+)").matcher(msg);
+        if (floor.find()) {
+            if (sb.length() > 0) sb.append(" ");
+            sb.append("F").append(floor.group(1));
+        }
+
+        StringBuilder coord = new StringBuilder();
+        Matcher x = Pattern.compile("(?i)x\\s*[:：]\\s*(-?\\d+)").matcher(msg);
+        Matcher y = Pattern.compile("(?i)y\\s*[:：]\\s*(-?\\d+)").matcher(msg);
+        Matcher z = Pattern.compile("(?i)z\\s*[:：]\\s*(-?\\d+)").matcher(msg);
+        if (x.find()) coord.append("x:").append(x.group(1));
+        if (y.find()) coord.append(coord.length() > 0 ? ",y:" : "y:").append(y.group(1));
+        if (z.find()) coord.append(coord.length() > 0 ? ",z:" : "z:").append(z.group(1));
+        if (coord.length() > 0) {
+            if (sb.length() > 0) sb.append(" ");
+            sb.append(coord);
+        }
+
+        if (sb.length() == 0) {
+            return msg.length() > 24 ? msg.substring(0, 24) + "…" : msg;
+        }
+        return sb.toString();
+    }
+
+    // 从头目镇压通知中提取"已被谁镇压"
+    private static String extractBossSuppressed(String msg) {
+        Matcher m = Pattern.compile("已被(.{1,24}?)镇压").matcher(msg);
+        if (m.find()) {
+            return "已被" + m.group(1).trim() + "镇压";
+        }
+        return msg.length() > 24 ? msg.substring(0, 24) + "…" : msg;
+    }
+
     @Override
     public void onInitializeClient() {
         // 1. 启动 QQ 转发的内置 HTTP 服务器 (支持多人服务器全局广播，并去除了前缀)
@@ -703,7 +745,14 @@ public class ExampleModClient implements ClientModInitializer {
             }
 
             if (cleanMsg.contains("5分钟内无人挑战头目将隐匿虚空")) {
-                bossNoticeHistory.add(text);
+                bossNoticeHistory.add(extractBossSummary(cleanMsg));
+                if (bossNoticeHistory.size() > MAX_BOSS_NOTICE_LINES) {
+                    bossNoticeHistory.remove(0);
+                }
+            }
+
+            if (cleanMsg.contains("头目镇压通知")) {
+                bossNoticeHistory.add(extractBossSuppressed(cleanMsg));
                 if (bossNoticeHistory.size() > MAX_BOSS_NOTICE_LINES) {
                     bossNoticeHistory.remove(0);
                 }
@@ -782,7 +831,7 @@ public class ExampleModClient implements ClientModInitializer {
             String lineInfo = selectedCopyLine + (autoSwitchLine ? " (抢线开启)" : " (抢线关闭)");
             drawContext.drawTextWithShadow(client.textRenderer, Text.literal("目标分线: §b" + lineInfo), statusX, statusY + 36, 0xFFFFFF);
 
-            int chatWidth = 400;
+            int chatWidth = 420;
             int chatX = screenWidth - chatWidth - 5;
             int chatY = statusY + 50;
             int displayLines = playerChatHistory.isEmpty() ? 1 : playerChatHistory.size();
@@ -813,8 +862,8 @@ public class ExampleModClient implements ClientModInitializer {
                 drawContext.drawTextWithShadow(client.textRenderer, Text.literal("§7(等待头目公告中...)"), bossNoticeX, bossNoticeY + 12, 0xFFFFFF);
             } else {
                 for (int i = 0; i < bossNoticeHistory.size(); i++) {
-                    Text msgText = bossNoticeHistory.get(i);
-                    drawContext.drawTextWithShadow(client.textRenderer, msgText, bossNoticeX, bossNoticeY + 12 + (i * 10), 0xFFFFFF);
+                    String msgStr = bossNoticeHistory.get(i);
+                    drawContext.drawTextWithShadow(client.textRenderer, Text.literal(msgStr), bossNoticeX, bossNoticeY + 12 + (i * 10), 0xFFFFFF);
                 }
             }
         });
