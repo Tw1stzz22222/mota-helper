@@ -82,7 +82,55 @@ public class ExampleModClient implements ClientModInitializer {
     private static final int SEVEN_C_POINT_WAIT_SECONDS = 20;
     private static final String SEVEN_C_LINE_PREFIX = "传送新增第七层";
 
+    // --- 8c 跑图常量 ---
+    private static final String EIGHT_C_NPC_KEYWORD = "八层";
+    private static final int EIGHT_C_POINT_WAIT_SECONDS = 20;   // KILL 点监听"成功击杀"的兜底等待
+    private static final List<Vec3d> EIGHT_C_APPROACH = Arrays.asList(
+            new Vec3d(-12, 31, 45),
+            new Vec3d(-12, 187, 45),
+            new Vec3d(-12, 187, -59)
+    );
+
+    private enum EightCRouteType { GOTO, MANUAL, KILL }
+
+    private static class EightCWaypoint {
+        final Vec3d pos;
+        final EightCRouteType type;
+        EightCWaypoint(Vec3d pos, EightCRouteType type) { this.pos = pos; this.type = type; }
+    }
+
+    private static final List<EightCWaypoint> EIGHT_C_ROUTE = Arrays.asList(
+            new EightCWaypoint(new Vec3d(-1419, 117, -354), EightCRouteType.GOTO),
+            new EightCWaypoint(new Vec3d(-1422, 103, -132), EightCRouteType.GOTO),
+            new EightCWaypoint(new Vec3d(-1422, 143, -132), EightCRouteType.GOTO),
+            new EightCWaypoint(new Vec3d(-1422, 143, -37),  EightCRouteType.MANUAL),
+            new EightCWaypoint(new Vec3d(-1422, 152, -37),  EightCRouteType.MANUAL),
+            new EightCWaypoint(new Vec3d(-1422, 148, 34),   EightCRouteType.MANUAL),
+            new EightCWaypoint(new Vec3d(-1422, 159, 34),   EightCRouteType.GOTO),
+            new EightCWaypoint(new Vec3d(-1422, 154, 222),  EightCRouteType.GOTO),
+            new EightCWaypoint(new Vec3d(-1422, 150, 368),  EightCRouteType.GOTO),
+            new EightCWaypoint(new Vec3d(-1422, 160, 368),  EightCRouteType.GOTO),
+            new EightCWaypoint(new Vec3d(-1422, 158, 406),  EightCRouteType.GOTO),
+            new EightCWaypoint(new Vec3d(-1422, 166, 406),  EightCRouteType.GOTO),
+            new EightCWaypoint(new Vec3d(-1422, 166, 534),  EightCRouteType.GOTO),
+            new EightCWaypoint(new Vec3d(-1422, 166, 601),  EightCRouteType.KILL),
+            new EightCWaypoint(new Vec3d(-1491, 166, 601),  EightCRouteType.KILL),
+            new EightCWaypoint(new Vec3d(-1353, 166, 601),  EightCRouteType.KILL)
+    );
+
+    // 8c PVP 分线：跳过地牢导航，直接打三个 Boss
+    private static final List<EightCWaypoint> EIGHT_C_ROUTE_PVP = Arrays.asList(
+            new EightCWaypoint(new Vec3d(-1422, 166, 601),  EightCRouteType.KILL),
+            new EightCWaypoint(new Vec3d(-1491, 166, 601),  EightCRouteType.KILL),
+            new EightCWaypoint(new Vec3d(-1353, 166, 601),  EightCRouteType.KILL)
+    );
+
+    private static List<EightCWaypoint> getEightCRoute() {
+        return "PVP".equals(selectedCopyLine) ? EIGHT_C_ROUTE_PVP : EIGHT_C_ROUTE;
+    }
+
     public enum TargetFloor {
+        F8C(new BlockPos(-14, 138, -72), new Vec3d(-14.0, 138.0, -72.0), "第八层", true),
         F10C(new BlockPos(-12, 164, -73), new Vec3d(-14.0, 163.0, -74.0), "第十层", false, 0),
         F11C(new BlockPos(-12, 174, -73), new Vec3d(-14.0, 173.0, -74.0), "第十一层", false, 0),
         F12C(new BlockPos(-12, 184, -73), new Vec3d(-14.0, 183.0, -74.0), "第十二层", false, 0),
@@ -97,6 +145,7 @@ public class ExampleModClient implements ClientModInitializer {
         private final boolean isSpecialMenu;
         private final int menuSlotIndex;
         private final boolean isSevenC;
+        private final boolean isEightC;
 
         TargetFloor(BlockPos signPos, Vec3d navPos, String floorNameCN, boolean isSpecialMenu, int menuSlotIndex) {
             this.signPos = signPos;
@@ -105,6 +154,18 @@ public class ExampleModClient implements ClientModInitializer {
             this.isSpecialMenu = isSpecialMenu;
             this.menuSlotIndex = menuSlotIndex;
             this.isSevenC = false;
+            this.isEightC = false;
+        }
+
+        // 8c 专用：NPC 实体入口 + 自定义接近路线 + 长跑图路线
+        TargetFloor(BlockPos signPos, Vec3d navPos, String floorNameCN, boolean isEightC) {
+            this.signPos = signPos;
+            this.navPos = navPos;
+            this.floorNameCN = floorNameCN;
+            this.isSpecialMenu = false;
+            this.menuSlotIndex = 0;
+            this.isSevenC = false;
+            this.isEightC = isEightC;
         }
 
         TargetFloor(String floorNameCN, int menuSlotIndex) {
@@ -123,6 +184,7 @@ public class ExampleModClient implements ClientModInitializer {
             this.isSpecialMenu = isSpecialMenu;
             this.menuSlotIndex = menuSlotIndex;
             this.isSevenC = isSevenC;
+            this.isEightC = false;
         }
 
         public BlockPos getSignPos() { return signPos; }
@@ -131,6 +193,7 @@ public class ExampleModClient implements ClientModInitializer {
         public boolean isSpecialMenu() { return isSpecialMenu; }
         public int getMenuSlotIndex() { return menuSlotIndex; }
         public boolean isSevenC() { return isSevenC; }
+        public boolean isEightC() { return isEightC; }
     }
 
     private enum AutoState {
@@ -235,7 +298,11 @@ public class ExampleModClient implements ClientModInitializer {
         SEVEN_WAIT_LINE_MENU("7c-等待分线菜单"),
         SEVEN_ENTER_SCENE("7c-等待进入场景"),
         SEVEN_FLIGHT("7c-飞行路线中"),
-        SEVEN_NEXT_LINE("7c-推进下一条线");
+        SEVEN_NEXT_LINE("7c-推进下一条线"),
+
+        // --- 8c 跑图 ---
+        GOTO_8C_APPROACH("8c-飞行接近入口"),
+        GOTO_8C_ROUTE("8c-跑图路线中");
 
         private final String desc;
         AutoState(String desc) { this.desc = desc; }
@@ -282,6 +349,13 @@ public class ExampleModClient implements ClientModInitializer {
     private static Object timerHackCache = null;
     private static Method timerSetEnabledMethodCache = null;
     private static boolean timerResolutionAttempted = false;
+
+    // --- 8c 跑图状态 ---
+    private static int eightCApproachIndex = 0;
+    private static int eightCRouteIndex = 0;
+    private static int eightCRouteSubStep = 0;   // 0=发指令 1=等到达 2=等击杀
+    private static boolean eightCKillDetected = false;
+    private static int eightCWaitTick = 0;
 
     private static TargetFloor selectedFloor = TargetFloor.F10C;
     private static String selectedTownLine = "魔塔一区";
@@ -370,6 +444,7 @@ public class ExampleModClient implements ClientModInitializer {
     private static final List<String> currentCheckOrder = new ArrayList<>();
 
     private static final List<String> COPY_LINES_12C = Arrays.asList("一线", "A1", "A2", "A3");
+    private static final List<String> COPY_LINES_8C = Arrays.asList("一线", "A1", "A2", "A3", "PVP");
     private static final List<String> TOWN_LINES_1_TO_10 = Arrays.asList(
             "魔塔一区", "魔塔二线", "魔塔三线", "魔塔四线", "魔塔五线",
             "魔塔六线", "魔塔七线", "魔塔八线", "魔塔九线", "魔塔十线"
@@ -491,6 +566,11 @@ public class ExampleModClient implements ClientModInitializer {
             switchState(client, AutoState.WAIT_MAIN_MENU);
             menuTimeoutTicks = 0;
             delayTicks = CLICK_DELAY;
+            eightCApproachIndex = 0;
+            eightCRouteIndex = 0;
+            eightCRouteSubStep = 0;
+            eightCKillDetected = false;
+            eightCWaitTick = 0;
 
             if (client.currentScreen instanceof ChatScreen) {
                 client.player.sendMessage(Text.literal("§e[魔塔助手] 检测到您正在使用聊天框，已暂停自动导航，请关闭聊天框后将自动恢复。"), false);
@@ -667,6 +747,9 @@ public class ExampleModClient implements ClientModInitializer {
             }
             if (sevenCMode && cleanMsg.contains("成功击杀")) {
                 sevenCKillDetected = true;
+            }
+            if (currentState == AutoState.GOTO_8C_ROUTE && cleanMsg.contains("成功击杀")) {
+                eightCKillDetected = true;
             }
             if (cleanMsg.contains("请选择传送的子服") || cleanMsg.contains("连接已断开") || cleanMsg.contains("被踢出") || cleanMsg.contains("正在匹配") || cleanMsg.contains("登录大厅")) {
                 if (currentState != AutoState.IDLE && currentState != AutoState.PAUSED) {
@@ -969,7 +1052,12 @@ public class ExampleModClient implements ClientModInitializer {
                             signRetryCount = 0;
                             stage1RetryCount = 0;
                             calibrationRetryCount = 0;
-                            if (selectedFloor == TargetFloor.F10C) {
+                            if (selectedFloor == TargetFloor.F8C) {
+                                delayTicks = 20; switchState(client, AutoState.GOTO_8C_ROUTE);
+                                eightCRouteIndex = 0; eightCRouteSubStep = 0;
+                                eightCKillDetected = false; eightCWaitTick = 0;
+                                client.player.sendMessage(Text.literal("§a[魔塔助手] 已成功进入 8c " + selectedCopyLine + "！"), false);
+                            } else if (selectedFloor == TargetFloor.F10C) {
                                 delayTicks = 40; switchState(client, AutoState.GOTO_10C_PART1);
                             } else if (selectedFloor == TargetFloor.F11C) {
                                 delayTicks = 10; switchState(client, AutoState.GOTO_11C_BOSS_CUSTOM);
@@ -1010,9 +1098,14 @@ public class ExampleModClient implements ClientModInitializer {
                 }
                 else if (currentState == AutoState.ENABLE_FLY_CHECK) {
                     boolean isFlying = client.player.getAbilities().flying || !client.player.isOnGround();
+                    AutoState afterFly = selectedFloor.isEightC() ? AutoState.GOTO_8C_APPROACH : AutoState.GOTO_POINT1;
 
                     if (isFlying) {
-                        switchState(client, AutoState.GOTO_POINT1);
+                        if (selectedFloor.isEightC()) {
+                            eightCApproachIndex = 0; eightCRouteSubStep = 0;
+                            setTimer(true);
+                        }
+                        switchState(client, afterFly);
                         subFlightStage = 1; stage1StartPos = playerPos; flightTimeoutTicks = 0; delayTicks = 5;
                     } else {
                         if (flyTryCount < 5) {
@@ -1023,7 +1116,11 @@ public class ExampleModClient implements ClientModInitializer {
                             delayTicks = 15;
                         } else {
                             client.player.jump();
-                            switchState(client, AutoState.GOTO_POINT1);
+                            if (selectedFloor.isEightC()) {
+                                eightCApproachIndex = 0; eightCRouteSubStep = 0;
+                                setTimer(true);
+                            }
+                            switchState(client, afterFly);
                             subFlightStage = 1; stage1StartPos = playerPos; flightTimeoutTicks = 0; delayTicks = 5;
                         }
                     }
@@ -1124,21 +1221,33 @@ public class ExampleModClient implements ClientModInitializer {
                 }
                 else if (currentState == AutoState.CLICK_SIGN) {
                     if (client.interactionManager != null && client.player != null) {
-                        BlockPos targetSign = selectedFloor.getSignPos();
-                        lookAtBlockPos(client, targetSign);
+                        if (selectedFloor.isEightC()) {
+                            // 8c：右键 NPC 实体打开分线菜单
+                            Entity npc = findEightCNpc(client);
+                            if (npc != null) {
+                                lookAtEntity(client, npc);
+                                client.interactionManager.interactEntity(client.player, npc, Hand.MAIN_HAND);
+                                client.player.swingHand(Hand.MAIN_HAND);
+                            } else {
+                                client.player.sendMessage(Text.literal("§c[魔塔助手] 未找到八层NPC，跳过当前路线..."), false);
+                            }
+                        } else {
+                            BlockPos targetSign = selectedFloor.getSignPos();
+                            lookAtBlockPos(client, targetSign);
 
-                        Vec3d eyePos = client.player.getEyePos();
-                        Vec3d blockCenter = Vec3d.ofCenter(targetSign);
-                        Direction side = Direction.getFacing(
-                            (float)(eyePos.x - blockCenter.x),
-                            (float)(eyePos.y - blockCenter.y),
-                            (float)(eyePos.z - blockCenter.z)
-                        );
+                            Vec3d eyePos = client.player.getEyePos();
+                            Vec3d blockCenter = Vec3d.ofCenter(targetSign);
+                            Direction side = Direction.getFacing(
+                                (float)(eyePos.x - blockCenter.x),
+                                (float)(eyePos.y - blockCenter.y),
+                                (float)(eyePos.z - blockCenter.z)
+                            );
 
-                        BlockHitResult hitResult = new BlockHitResult(blockCenter, side, targetSign, false);
+                            BlockHitResult hitResult = new BlockHitResult(blockCenter, side, targetSign, false);
 
-                        client.interactionManager.interactBlock(client.player, Hand.MAIN_HAND, hitResult);
-                        client.player.swingHand(Hand.MAIN_HAND);
+                            client.interactionManager.interactBlock(client.player, Hand.MAIN_HAND, hitResult);
+                            client.player.swingHand(Hand.MAIN_HAND);
+                        }
 
                         copyEnterCheckTicks = 0;
                         menuWaitTimeoutTicks = 0;
@@ -1384,6 +1493,12 @@ public class ExampleModClient implements ClientModInitializer {
                 else if (currentState == AutoState.WAIT_15C_BOSS_FIGHT) {
                     handleSingleBossFightWait(client, "15c");
                 }
+                else if (currentState == AutoState.GOTO_8C_APPROACH) {
+                    handleEightCApproach(client, playerPos);
+                }
+                else if (currentState == AutoState.GOTO_8C_ROUTE) {
+                    handleEightCRoute(client, playerPos);
+                }
             }
         });
     }
@@ -1463,10 +1578,11 @@ public class ExampleModClient implements ClientModInitializer {
     }
 
     private static void skipCurrentAndAdvanceNext(MinecraftClient client) {
-        int copyIndex = COPY_LINES_12C.indexOf(selectedCopyLine);
+        List<String> copyLines = getActiveCopyLines();
+        int copyIndex = copyLines.indexOf(selectedCopyLine);
 
-        if (copyIndex != -1 && copyIndex < COPY_LINES_12C.size() - 1) {
-            selectedCopyLine = COPY_LINES_12C.get(copyIndex + 1);
+        if (copyIndex != -1 && copyIndex < copyLines.size() - 1) {
+            selectedCopyLine = copyLines.get(copyIndex + 1);
             client.player.sendMessage(Text.literal("§e[循环系统] 跳过当前，推进至同镇线下一分线: §b" + selectedCopyLine), false);
             startMenuSequence();
             return;
@@ -1713,6 +1829,20 @@ public class ExampleModClient implements ClientModInitializer {
     private static boolean handleCopyLineSelectionWithDelay(ScreenHandler handler, MinecraftClient client) {
         if (client.interactionManager == null || client.player == null) return false;
 
+        // PVP 分线永不检测人数：目标就是 PVP 时直接点击进入（无论抢线开关）
+        if ("PVP".equals(selectedCopyLine)) {
+            for (int i = 0; i < handler.slots.size(); i++) {
+                ItemStack stack = handler.getSlot(i).getStack();
+                if (!stack.isEmpty() && stack.getName().getString().contains("PVP")) {
+                    client.player.sendMessage(Text.literal("§a[魔塔助手] PVP 分线无需检测人数，直接进入！"), false);
+                    client.interactionManager.clickSlot(handler.syncId, i, 0, SlotActionType.PICKUP, client.player);
+                    currentCheckOrder.clear();
+                    isWaitingForServerLore = false;
+                    return true;
+                }
+            }
+        }
+
         if (currentState == AutoState.WAIT_SPECIAL_SUB_MENU && selectedFloor.isSpecialMenu()) {
             int slotIdx = selectedFloor.getMenuSlotIndex();
             if (slotIdx >= 0 && slotIdx < handler.slots.size()) {
@@ -1772,16 +1902,23 @@ public class ExampleModClient implements ClientModInitializer {
             if (targetSlotToCheck >= 0 && targetSlotToCheck < handler.slots.size()) {
                 ItemStack stack = handler.getSlot(targetSlotToCheck).getStack();
                 if (!stack.isEmpty()) {
-                    boolean isEmptyLine = isLineEmpty(stack, client);
+                    String matchedKeyword = currentCheckOrder.get(currentLineIndex);
+                    boolean isPvpLine = "PVP".equals(selectedCopyLine)
+                            || matchedKeyword.contains("PVP")
+                            || stack.getName().getString().contains("PVP");
+                    boolean isEmptyLine = isPvpLine || isLineEmpty(stack, client);
 
                     if (isEmptyLine) {
-                        String matchedKeyword = currentCheckOrder.get(currentLineIndex);
-                        if (matchedKeyword.contains("A1")) selectedCopyLine = "A1";
+                        if (isPvpLine) selectedCopyLine = "PVP";
+                        else if (matchedKeyword.contains("A1")) selectedCopyLine = "A1";
                         else if (matchedKeyword.contains("A2")) selectedCopyLine = "A2";
                         else if (matchedKeyword.contains("A3")) selectedCopyLine = "A3";
                         else if (matchedKeyword.contains("一线") || matchedKeyword.contains("1线")) selectedCopyLine = "一线";
 
-                        client.player.sendMessage(Text.literal("§a[魔塔助手] 确认 [" + matchedKeyword + "] 当前无人(0人)！正在进入..."), false);
+                        String msg = isPvpLine
+                                ? "§a[魔塔助手] PVP 分线无需检测人数，直接进入！"
+                                : "§a[魔塔助手] 确认 [" + matchedKeyword + "] 当前无人(0人)！正在进入...";
+                        client.player.sendMessage(Text.literal(msg), false);
                         client.interactionManager.clickSlot(handler.syncId, targetSlotToCheck, 0, SlotActionType.PICKUP, client.player);
                         isWaitingForServerLore = false;
                         currentCheckOrder.clear();
@@ -1840,17 +1977,35 @@ public class ExampleModClient implements ClientModInitializer {
         return false;
     }
 
- private static String getCurrentKeywordString() {
+    private static List<String> getActiveCopyLines() {
+        return selectedFloor.isEightC() ? COPY_LINES_8C : COPY_LINES_12C;
+    }
+
+    private static String lineKeyword(String line) {
+        if (line.equals("PVP")) return "PVP";
         String floorPrefix = "传送" + selectedFloor.getFloorNameCN() + "一线";
-        return selectedCopyLine.equals("一线") ? floorPrefix : floorPrefix + selectedCopyLine;
+        return line.equals("一线") ? floorPrefix : floorPrefix + line;
+    }
+
+    private static String getCurrentKeywordString() {
+        return lineKeyword(selectedCopyLine);
     }
 
     private static void initCheckOrderList() {
         currentCheckOrder.clear();
-        String floorPrefix = "传送" + selectedFloor.getFloorNameCN() + "一线";
 
         if (!autoSwitchLine) return;
 
+        if (selectedFloor.isEightC()) {
+            String[] lines = {"一线", "A1", "A2", "A3", "PVP"};
+            currentCheckOrder.add(lineKeyword(selectedCopyLine));
+            for (String l : lines) {
+                if (!l.equals(selectedCopyLine)) currentCheckOrder.add(lineKeyword(l));
+            }
+            return;
+        }
+
+        String floorPrefix = "传送" + selectedFloor.getFloorNameCN() + "一线";
         if (selectedCopyLine.equals("一线")) {
             currentCheckOrder.addAll(Arrays.asList(floorPrefix, floorPrefix + "A1", floorPrefix + "A2", floorPrefix + "A3"));
         } else if (selectedCopyLine.equals("A1")) {
@@ -1952,6 +2107,121 @@ public class ExampleModClient implements ClientModInitializer {
     private static String extractLineNumber(String townLineStr) {
         if (townLineStr == null) return "";
         return townLineStr.replaceAll("[魔塔传送服务器线区]", "").trim();
+    }
+
+    // ============================================================
+    // 8c 跑图自动化
+    // ============================================================
+
+    private static void handleEightCApproach(MinecraftClient client, Vec3d playerPos) {
+        // 第11步：三个接近点飞完后，关闭飞行 → 等待 2s（自然下坠到 NPC 高度附近）
+        if (eightCApproachIndex == EIGHT_C_APPROACH.size()) {
+            disableFlight(client);
+            eightCWaitTick++;
+            if (eightCWaitTick >= 40) { // 关闭飞行后等待 2s
+                eightCWaitTick = 0;
+                eightCApproachIndex++;
+            }
+            return;
+        }
+
+        if (eightCApproachIndex > EIGHT_C_APPROACH.size()) {
+            // 完成：重新开启飞行，飞向 NPC 位置（复用 GOTO_POINT2 的导航与 NPC 点击流程）
+            ensureFlying(client);
+            eightCRouteSubStep = 0;
+            switchState(client, AutoState.GOTO_POINT2);
+            flightTimeoutTicks = 0;
+            return;
+        }
+
+        Vec3d target = EIGHT_C_APPROACH.get(eightCApproachIndex);
+        if (eightCRouteSubStep == 0) {
+            executeWurstCommandDirectly(String.format("goto %.0f %.0f %.0f", target.x, target.y, target.z));
+            eightCRouteSubStep = 1;
+            eightCWaitTick = 0;
+            return;
+        }
+        eightCWaitTick++;
+        if (isArrived(playerPos, target, ARRIVE_DISTANCE) || eightCWaitTick > 400) {
+            eightCWaitTick = 0;
+            eightCRouteSubStep = 0;
+            eightCApproachIndex++;
+        }
+    }
+
+    private static void handleEightCRoute(MinecraftClient client, Vec3d playerPos) {
+        EightCWaypoint wp = getEightCRoute().get(eightCRouteIndex);
+
+        if (eightCRouteSubStep == 0) {
+            ensureFlying(client);
+            eightCKillDetected = false;
+            eightCWaitTick = 0;
+            if (wp.type == EightCRouteType.MANUAL) {
+                eightCRouteSubStep = 1; // 手动飞行：substep 1 直接按键导航
+            } else {
+                executeWurstCommandDirectly(String.format("goto %.0f %.0f %.0f", wp.pos.x, wp.pos.y, wp.pos.z));
+                eightCRouteSubStep = 1;
+            }
+            return;
+        }
+
+        if (wp.type == EightCRouteType.MANUAL) {
+            navigateDirectToTarget(client, playerPos, wp.pos);
+            eightCWaitTick++;
+            if (isArrived(playerPos, wp.pos, ARRIVE_DISTANCE) || eightCWaitTick > 600) {
+                resetFlightKeys(client);
+                advanceEightCRoute(client);
+            }
+            return;
+        }
+
+        // GOTO / KILL：substep 1 等待到达
+        if (eightCRouteSubStep == 1) {
+            eightCWaitTick++;
+            if (isArrived(playerPos, wp.pos, ARRIVE_DISTANCE) || eightCWaitTick > 400) {
+                eightCWaitTick = 0;
+                if (wp.type == EightCRouteType.KILL) {
+                    eightCKillDetected = false;
+                    eightCRouteSubStep = 2; // 等待"成功击杀"
+                } else {
+                    advanceEightCRoute(client);
+                }
+            }
+            return;
+        }
+
+        // substep 2：KILL 等待击杀或 20s 兜底超时
+        eightCWaitTick++;
+        if (eightCKillDetected || eightCWaitTick >= EIGHT_C_POINT_WAIT_SECONDS * 20) {
+            advanceEightCRoute(client);
+        }
+    }
+
+    private static void advanceEightCRoute(MinecraftClient client) {
+        eightCRouteIndex++;
+        eightCRouteSubStep = 0;
+        eightCWaitTick = 0;
+        eightCKillDetected = false;
+        if (eightCRouteIndex >= getEightCRoute().size()) {
+            resetFlightKeys(client);
+            disableFlight(client);
+            setTimer(false);
+            client.player.sendMessage(Text.literal("§a[魔塔助手] 8c " + selectedCopyLine + " 路线完成，推进下一循环..."), false);
+            skipCurrentAndAdvanceNext(client);
+        }
+    }
+
+    private static Entity findEightCNpc(MinecraftClient client) {
+        if (client.world == null || client.player == null) return null;
+        Entity fallback = null;
+        for (Entity entity : client.world.getEntities()) {
+            if (entity == null) continue;
+            String clean = stripColorCodes(entity.getDisplayName());
+            if (clean.isEmpty()) continue;
+            if (clean.contains(EIGHT_C_NPC_KEYWORD + "一线")) return entity;
+            if (fallback == null && clean.contains(EIGHT_C_NPC_KEYWORD)) fallback = entity;
+        }
+        return fallback;
     }
 
     // ============================================================
