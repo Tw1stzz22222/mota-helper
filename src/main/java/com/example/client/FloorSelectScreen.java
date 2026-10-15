@@ -15,6 +15,7 @@ public class FloorSelectScreen extends Screen {
     private int abyssMaxCycles = 0;
     private int sevenCStartIdx = 0;
     private int sevenCEndIdx = ExampleModClient.SEVEN_C_LINES.length - 1;
+    private boolean includeLucifer = false;
 
     private static final ExampleModClient.TargetFloor[] FLOORS = ExampleModClient.TargetFloor.values();
     private static final String[] TOWNS = {
@@ -58,9 +59,15 @@ public class FloorSelectScreen extends Screen {
                     .build());
 
             addDrawableChild(ButtonWidget.builder(
+                            Text.literal("天空路西法: " + (includeLucifer ? "§a含" : "§c不含")),
+                            b -> { includeLucifer = !includeLucifer; this.clearAndInit(); })
+                    .dimensions(cx - 100, y + 72, 200, 20)
+                    .build());
+
+            addDrawableChild(ButtonWidget.builder(
                             Text.literal("§a§l开始 7c 跑刷"),
-                            b -> { ExampleModClient.startSevenC(sevenCStartIdx, sevenCEndIdx); this.close(); })
-                    .dimensions(cx - 100, y + 80, 200, 20)
+                            b -> { ExampleModClient.startSevenC(sevenCStartIdx, sevenCEndIdx, includeLucifer); this.close(); })
+                    .dimensions(cx - 100, y + 96, 200, 20)
                     .build());
         } else {
             String[] copyLines = getCopyLines();
