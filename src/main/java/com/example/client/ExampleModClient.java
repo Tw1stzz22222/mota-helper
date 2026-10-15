@@ -72,16 +72,38 @@ public class ExampleModClient implements ClientModInitializer {
             "十一线", "十二线", "十三线", "十四线", "十五线", "十六线", "十七线", "十八线", "十九线", "二十线",
             "二十一线", "二十二线", "二十三线", "二十四线", "二十五线"
     };
-    private static final List<Vec3d> SEVEN_C_WAYPOINTS = Arrays.asList(
-            new Vec3d(647, 195, -1209),
-            new Vec3d(633, 221, -1050),
-            new Vec3d(555, 202, -1049),
-            new Vec3d(477, 190, -1012),
-            new Vec3d(383, 241, -967),
-            new Vec3d(351, 236, -1012)
+
+    // 7c 航点动作类型：GOTO 纯飞行 / WAIT_KILL 到达后监听"成功击杀" / CLICK_BUTTON 右键石质按钮
+    private enum SevenCStepType { GOTO, WAIT_KILL, CLICK_BUTTON }
+
+    private static class SevenCWaypoint {
+        final Vec3d pos;
+        final SevenCStepType type;
+        final int waitSeconds;   // WAIT_KILL 的兜底等待秒数
+
+        SevenCWaypoint(Vec3d pos, SevenCStepType type, int waitSeconds) {
+            this.pos = pos;
+            this.type = type;
+            this.waitSeconds = waitSeconds;
+        }
+    }
+
+    // 基础路线（不含天空路西法）：6 个航点
+    private static final List<SevenCWaypoint> SEVEN_C_BASE_WAYPOINTS = Arrays.asList(
+            new SevenCWaypoint(new Vec3d(647, 195, -1209), SevenCStepType.GOTO, 0),
+            new SevenCWaypoint(new Vec3d(633, 221, -1050), SevenCStepType.GOTO, 0),
+            new SevenCWaypoint(new Vec3d(555, 202, -1049), SevenCStepType.GOTO, 0),
+            new SevenCWaypoint(new Vec3d(477, 190, -1012), SevenCStepType.WAIT_KILL, 20),
+            new SevenCWaypoint(new Vec3d(383, 241, -967), SevenCStepType.GOTO, 0),
+            new SevenCWaypoint(new Vec3d(351, 236, -1012), SevenCStepType.WAIT_KILL, 20)
     );
-    private static final boolean[] SEVEN_C_WAIT_5S = { false, false, false, true, false, true };
-    private static final int SEVEN_C_POINT_WAIT_SECONDS = 20;
+
+    // 天空路西法追加：351 点之后 → 右键石质按钮 → 击杀路西法(14s 兜底)
+    private static final List<SevenCWaypoint> SEVEN_C_LUCIFER_WAYPOINTS = Arrays.asList(
+            new SevenCWaypoint(new Vec3d(321, 236, -1014), SevenCStepType.CLICK_BUTTON, 0),
+            new SevenCWaypoint(new Vec3d(214, 236, -1022), SevenCStepType.WAIT_KILL, 14)
+    );
+
     private static final String SEVEN_C_LINE_PREFIX = "传送新增第七层";
 
     // --- 8c 跑图常量 ---
@@ -343,10 +365,12 @@ public class ExampleModClient implements ClientModInitializer {
     private static int sevenCLineStart = 0;
     private static int sevenCLineEnd = SEVEN_C_LINES.length - 1;
     private static int sevenCWaypointIndex = 0;
-    private static int sevenCRouteSubStep = 0;   // 0=发goto 1=等到达 2=等5s
+    private static int sevenCRouteSubStep = 0;   // 0=发goto 1=等到达 2=等击杀
     private static int sevenCMenuTick = 0;
     private static int sevenCWaitTick = 0;
     private static boolean sevenCKillDetected = false;   // 到达等待点后监听"成功击杀"
+    private static boolean sevenCIncludeLucifer = false; // 是否含天空路西法
+    private static List<SevenCWaypoint> sevenCRoute = new ArrayList<>(); // 当前实际航点列表
     // 7c 飞行期间开启 Wurst Timer 加速
     private static Object timerHackCache = null;
     private static Method timerSetEnabledMethodCache = null;
@@ -890,7 +914,11 @@ public class ExampleModClient implements ClientModInitializer {
             }
 
             while (pauseOrNextKeyBinding.wasPressed()) {
-                if (abyssMode || sevenCMode) continue;
+                if (sevenCMode) {
+                    forceSkipSevenCLine(client);
+                    continue;
+                }
+                if (abyssMode) continue;
                 if (currentState != AutoState.PAUSED && currentState != AutoState.IDLE) {
                     switchState(client, AutoState.PAUSED);
                     client.player.sendMessage(Text.literal("§e[魔塔助手] 当前流程已暂停。再次按下 '-' 键将直接跳过当前，跳转并开始下一个循环！"), false);
@@ -2934,12 +2962,15 @@ public class ExampleModClient implements ClientModInitializer {
     // 7c 跑刷自动化
     // ============================================================
 
-    public static void startSevenC(int startLine, int endLine) {
+    public static void startSevenC(int startLine, int endLine, boolean includeLucifer) {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null) return;
         abyssMode = false;
         abyssRewardMode = false;
         sevenCMode = true;
+        sevenCIncludeLucifer = includeLucifer;
+        sevenCRoute = new ArrayList<>(SEVEN_C_BASE_WAYPOINTS);
+        if (includeLucifer) sevenCRoute.addAll(SEVEN_C_LUCIFER_WAYPOINTS);
         sevenCLineStart = Math.max(0, Math.min(startLine, SEVEN_C_LINES.length - 1));
         sevenCLineEnd = Math.max(0, Math.min(endLine, SEVEN_C_LINES.length - 1));
         sevenCLineIndex = sevenCLineStart;
@@ -2951,8 +2982,8 @@ public class ExampleModClient implements ClientModInitializer {
         if (client.currentScreen != null) client.setScreen(null);
         switchState(client, AutoState.SEVEN_WAIT_MAIN_MENU);
         client.player.networkHandler.sendChatMessage("/menu");
-        client.player.sendMessage(Text.literal(String.format("§b[魔塔助手] 启动 7c 跑刷 -> 起始线:§e%s §b| 结束线:§e%s",
-                SEVEN_C_LINES[sevenCLineStart], SEVEN_C_LINES[sevenCLineEnd])), false);
+        client.player.sendMessage(Text.literal(String.format("§b[魔塔助手] 启动 7c 跑刷 -> 起始线:§e%s §b| 结束线:§e%s §b| 天空路西法:§e%s",
+                SEVEN_C_LINES[sevenCLineStart], SEVEN_C_LINES[sevenCLineEnd], includeLucifer ? "含" : "不含")), false);
     }
 
     private static void startSevenCNav(MinecraftClient client) {
@@ -3066,40 +3097,46 @@ public class ExampleModClient implements ClientModInitializer {
 
     private static void handleSevenCFlight(MinecraftClient client) {
         Vec3d playerPos = client.player.getPos();
+        SevenCWaypoint wp = sevenCRoute.get(sevenCWaypointIndex);
 
         if (sevenCRouteSubStep == 0) {
-            Vec3d target = SEVEN_C_WAYPOINTS.get(sevenCWaypointIndex);
-            executeWurstCommandDirectly(String.format("goto %.0f %.0f %.0f", target.x, target.y, target.z));
+            executeWurstCommandDirectly(String.format("goto %.0f %.0f %.0f", wp.pos.x, wp.pos.y, wp.pos.z));
             sevenCRouteSubStep = 1;
             sevenCWaitTick = 0;
             return;
         }
 
         if (sevenCRouteSubStep == 1) {
-            Vec3d target = SEVEN_C_WAYPOINTS.get(sevenCWaypointIndex);
             sevenCWaitTick++;
-            if (isArrived(playerPos, target, ARRIVE_DISTANCE) || sevenCWaitTick > 400) {
-                if (SEVEN_C_WAIT_5S[sevenCWaypointIndex]) {
-                    sevenCRouteSubStep = 2;
-                    sevenCWaitTick = 0;
-                    sevenCKillDetected = false;
-                } else {
-                    advanceSevenCWaypoint(client);
+            if (isArrived(playerPos, wp.pos, ARRIVE_DISTANCE) || sevenCWaitTick > 400) {
+                sevenCWaitTick = 0;
+                switch (wp.type) {
+                    case GOTO:
+                        advanceSevenCWaypoint(client);
+                        break;
+                    case WAIT_KILL:
+                        sevenCRouteSubStep = 2;
+                        sevenCKillDetected = false;
+                        break;
+                    case CLICK_BUTTON:
+                        clickStoneButton(client);
+                        advanceSevenCWaypoint(client);
+                        break;
                 }
             }
             return;
         }
 
-        // subStep == 2：到达后等待，监听"成功击杀"或超时
+        // subStep == 2：WAIT_KILL 到达后等待，监听"成功击杀"或兜底超时
         sevenCWaitTick++;
-        if (sevenCKillDetected || sevenCWaitTick >= SEVEN_C_POINT_WAIT_SECONDS * 20) {
+        if (sevenCKillDetected || sevenCWaitTick >= wp.waitSeconds * 20) {
             advanceSevenCWaypoint(client);
         }
     }
 
     private static void advanceSevenCWaypoint(MinecraftClient client) {
         sevenCWaypointIndex++;
-        if (sevenCWaypointIndex >= SEVEN_C_WAYPOINTS.size()) {
+        if (sevenCWaypointIndex >= sevenCRoute.size()) {
             resetFlightKeys(client);
             disableFlight(client);
             setTimer(false);
@@ -3110,6 +3147,48 @@ public class ExampleModClient implements ClientModInitializer {
             sevenCRouteSubStep = 0;
             sevenCWaitTick = 0;
         }
+    }
+
+    private static BlockPos findStoneButton(MinecraftClient client, Vec3d center, int radius) {
+        if (client.world == null) return null;
+        int cx = (int) Math.floor(center.x);
+        int cy = (int) Math.floor(center.y);
+        int cz = (int) Math.floor(center.z);
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dy = -radius; dy <= radius; dy++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    BlockPos p = new BlockPos(cx + dx, cy + dy, cz + dz);
+                    if (client.world.getBlockState(p).isAir()) continue;
+                    String name = client.world.getBlockState(p).getBlock().getName().getString();
+                    if (name.contains("按钮") || name.toLowerCase().contains("button")) {
+                        return p;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    private static void clickStoneButton(MinecraftClient client) {
+        Vec3d playerPos = client.player.getPos();
+        BlockPos btn = findStoneButton(client, playerPos, 4);
+        if (btn == null) {
+            client.player.sendMessage(Text.literal("§c[魔塔助手] 未在附近找到石质按钮，跳过并推进..."), false);
+            return;
+        }
+        lookAtBlockPos(client, btn);
+
+        Vec3d eyePos = client.player.getEyePos();
+        Vec3d blockCenter = Vec3d.ofCenter(btn);
+        Direction side = Direction.getFacing(
+                (float) (eyePos.x - blockCenter.x),
+                (float) (eyePos.y - blockCenter.y),
+                (float) (eyePos.z - blockCenter.z)
+        );
+        BlockHitResult hitResult = new BlockHitResult(blockCenter, side, btn, false);
+        client.interactionManager.interactBlock(client.player, Hand.MAIN_HAND, hitResult);
+        client.player.swingHand(Hand.MAIN_HAND);
+        client.player.sendMessage(Text.literal("§a[魔塔助手] 已右键石质按钮..."), false);
     }
 
     private static void ensureTimerHackResolved() {
@@ -3152,5 +3231,15 @@ public class ExampleModClient implements ClientModInitializer {
         sevenCLineIndex = rangeWrapped ? sevenCLineStart : (sevenCLineIndex + 1) % SEVEN_C_LINES.length;
         client.player.sendMessage(Text.literal("§e[循环系统] 推进至下一条线: §b" + SEVEN_C_LINES[sevenCLineIndex]), false);
         startSevenCNav(client);
+    }
+
+    // 7c 跑刷中按 '-' 键：清理飞行/Timer 后强制结束当前线路，推进下一条线
+    private static void forceSkipSevenCLine(MinecraftClient client) {
+        resetFlightKeys(client);
+        disableFlight(client);
+        setTimer(false);
+        sevenCKillDetected = false;
+        client.player.sendMessage(Text.literal("§e[魔塔助手] 收到 '-' 键信号，强制结束当前 7c 线路，进行下一条线路..."), false);
+        advanceSevenCLine(client);
     }
 }
