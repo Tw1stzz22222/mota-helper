@@ -7,8 +7,9 @@ import net.minecraft.text.Text;
 public class FloorSelectScreen extends Screen {
     private int floorIndex = 0;
     private int townIndex = 0;
-    private int townEndIndex = 9;
+    private int townEndIndex = 4;
     private int copyIndex = 0;
+    private ExampleModClient.CopyGroupMode groupMode = ExampleModClient.CopyGroupMode.BOTH;
     private boolean autoSwitch = true;
     private boolean cycleDelayEnabled = false;
     private int cycleDelaySeconds = 30;
@@ -18,10 +19,7 @@ public class FloorSelectScreen extends Screen {
     private boolean includeLucifer = false;
 
     private static final ExampleModClient.TargetFloor[] FLOORS = ExampleModClient.TargetFloor.values();
-    private static final String[] TOWNS = {
-            "魔塔一区", "魔塔二线", "魔塔三线", "魔塔四线", "魔塔五线",
-            "魔塔六线", "魔塔七线", "魔塔八线", "魔塔九线", "魔塔十线"
-    };
+    private static final String[] TOWNS = ExampleModClient.TOWN_LINES.toArray(new String[0]);
 
     public FloorSelectScreen() {
         super(Text.literal("魔塔助手 - 选择目标"));
@@ -91,58 +89,72 @@ public class FloorSelectScreen extends Screen {
                     .build());
 
             addDrawableChild(ButtonWidget.builder(
+                            Text.literal("副本组: §b" + groupMode.getDesc()),
+                            b -> { groupMode = nextGroupMode(groupMode); this.clearAndInit(); })
+                    .dimensions(cx - 100, y + 96, 200, 20)
+                    .build());
+
+            addDrawableChild(ButtonWidget.builder(
                             Text.literal("抢线: " + (autoSwitch ? "§a开启" : "§c关闭")),
                             b -> { autoSwitch = !autoSwitch; this.clearAndInit(); })
-                    .dimensions(cx - 100, y + 96, 200, 20)
+                    .dimensions(cx - 100, y + 120, 200, 20)
                     .build());
 
             addDrawableChild(ButtonWidget.builder(
                             Text.literal("循环间隔: " + (cycleDelayEnabled ? "§a开启" : "§c关闭")),
                             b -> { cycleDelayEnabled = !cycleDelayEnabled; this.clearAndInit(); })
-                    .dimensions(cx - 100, y + 120, 200, 20)
+                    .dimensions(cx - 100, y + 144, 200, 20)
                     .build());
 
             addDrawableChild(ButtonWidget.builder(
                             Text.literal("间隔秒数: §b" + cycleDelaySeconds + " §8秒"),
                             b -> { cycleDelaySeconds = (cycleDelaySeconds >= 180) ? 30 : cycleDelaySeconds + 30; this.clearAndInit(); })
-                    .dimensions(cx - 100, y + 144, 200, 20)
+                    .dimensions(cx - 100, y + 168, 200, 20)
                     .build());
 
             addDrawableChild(ButtonWidget.builder(
                             Text.literal("§a§l开始自动化"),
                             b -> {
                                 ExampleModClient.startFullAutomation(
-                                        FLOORS[floorIndex], townIndex, townEndIndex, copyLines[ci], autoSwitch,
-                                        cycleDelayEnabled, cycleDelaySeconds);
+                                        FLOORS[floorIndex], townIndex, townEndIndex, copyLines[ci],
+                                        groupMode, autoSwitch, cycleDelayEnabled, cycleDelaySeconds);
                                 this.close();
                             })
-                    .dimensions(cx - 100, y + 176, 200, 20)
+                    .dimensions(cx - 100, y + 200, 200, 20)
                     .build());
         }
 
         addDrawableChild(ButtonWidget.builder(
                         Text.literal("深渊挑战次数: " + (abyssMaxCycles == 0 ? "§e无限" : "§b" + abyssMaxCycles)),
                         b -> { abyssMaxCycles = nextCycles(abyssMaxCycles); this.clearAndInit(); })
-                .dimensions(cx - 100, y + 224, 200, 20)
+                .dimensions(cx - 100, y + 248, 200, 20)
                 .build());
 
         addDrawableChild(ButtonWidget.builder(
                         Text.literal("§a§l开始深渊挑战"),
                         b -> { ExampleModClient.startAbyssChallenge(abyssMaxCycles); this.close(); })
-                .dimensions(cx - 100, y + 248, 200, 20)
+                .dimensions(cx - 100, y + 272, 200, 20)
                 .build());
 
         addDrawableChild(ButtonWidget.builder(
                         Text.literal("§a§l开始深渊奖励"),
                         b -> { ExampleModClient.startAbyssReward(); this.close(); })
-                .dimensions(cx - 100, y + 272, 200, 20)
+                .dimensions(cx - 100, y + 296, 200, 20)
                 .build());
 
         addDrawableChild(ButtonWidget.builder(
                         Text.literal("§7取消"),
                         b -> this.close())
-                .dimensions(cx - 100, y + 296, 200, 20)
+                .dimensions(cx - 100, y + 320, 200, 20)
                 .build());
+    }
+
+    private ExampleModClient.CopyGroupMode nextGroupMode(ExampleModClient.CopyGroupMode current) {
+        switch (current) {
+            case BOTH: return ExampleModClient.CopyGroupMode.ONLY_A;
+            case ONLY_A: return ExampleModClient.CopyGroupMode.ONLY_B;
+            default: return ExampleModClient.CopyGroupMode.BOTH;
+        }
     }
 
     private int nextCycles(int current) {
