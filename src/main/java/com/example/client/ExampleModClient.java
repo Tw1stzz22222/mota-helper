@@ -2705,42 +2705,44 @@ public class ExampleModClient implements ClientModInitializer {
     }
 
     /**
-     * 接近深渊 NPC。
-     * 挑战模式：点完「深渊挑战」已经直达场景，NPC 在场景内且坐标不固定，按实体实时位置接近；
-     * 奖励模式：仍是老枢纽里的固定 NPC(0,64,-1)。
+     * 接近深渊 NPC（挑战、奖励两种模式统一按实体实时位置接近）。
+     * 挑战：点完「深渊挑战」已直达场景，NPC 在场景内，坐标不固定；
+     * 奖励：由玩家手动站在 NPC 附近后开启，通常首帧就在 6 格内，直接点。
      */
     private static void handleAbyssApproachNpc(MinecraftClient client) {
-        if (abyssRewardMode) {
-            handleAbyssMove(client, ABYSS_NPC_POS, true, AutoState.ABYSS_CLICK_NPC);
-            return;
-        }
-
         Entity npc = findAbyssNpc(client);
-        if (npc == null) {
+
+        if (npc != null) {
+            // 已经在伸手可及的范围：直接点，别飞过头
+            if (client.player.squaredDistanceTo(npc) <= 36.0) {
+                abyssTo(client, AutoState.ABYSS_CLICK_NPC);
+                return;
+            }
             abyssStepTick++;
-            if (abyssStepTick > 100) {
-                abyssTo(client, AutoState.ABYSS_CLICK_NPC);   // 找不到也点一次，至少输出附近实体调试信息
+            if (abyssStepTick == 1 || abyssStepTick % 15 == 0) {
+                ensureFlying(client);
+                executeWurstCommandDirectly(String.format("goto %.0f %.0f %.0f", npc.getX(), npc.getY(), npc.getZ()));
+            }
+            if (abyssStepTick > ABYSS_GOTO_TIMEOUT) {
+                abyssTo(client, AutoState.ABYSS_CLICK_NPC);
             }
             return;
         }
 
-        // 已经在伸手可及的范围：直接点，别飞过头
-        if (client.player.squaredDistanceTo(npc) <= 36.0) {
-            abyssTo(client, AutoState.ABYSS_CLICK_NPC);
-            return;
-        }
-
+        // 没扫到实体
         abyssStepTick++;
-        if (abyssStepTick == 1 || abyssStepTick % 15 == 0) {
+        if (abyssRewardMode && abyssStepTick == 60) {
+            // 奖励模式兜底：枢纽 NPC 的老坐标，先飞过去再扫一次
             ensureFlying(client);
-            executeWurstCommandDirectly(String.format("goto %.0f %.0f %.0f", npc.getX(), npc.getY(), npc.getZ()));
+            executeWurstCommandDirectly(String.format("goto %.0f %.0f %.0f", ABYSS_NPC_POS.x, ABYSS_NPC_POS.y, ABYSS_NPC_POS.z));
         }
-        if (abyssStepTick > ABYSS_GOTO_TIMEOUT) {
-            abyssTo(client, AutoState.ABYSS_CLICK_NPC);
+        if (abyssStepTick > 200) {
+            abyssTo(client, AutoState.ABYSS_CLICK_NPC);   // 点一次，至少把附近实体名打出来
         }
     }
 
-    /** 发 goto 命令并在到达后切状态；fly=true 飞行、false 走路。 */    private static void handleAbyssMove(MinecraftClient client, Vec3d target, boolean fly, AutoState next) {
+    /** 发 goto 命令并在到达后切状态；fly=true 飞行、false 走路。 */
+    private static void handleAbyssMove(MinecraftClient client, Vec3d target, boolean fly, AutoState next) {
         if (abyssSubStep == 0) {
             if (fly) ensureFlying(client); else disableFlight(client);
             executeWurstCommandDirectly(String.format("goto %.0f %.0f %.0f", target.x, target.y, target.z));
