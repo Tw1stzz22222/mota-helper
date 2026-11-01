@@ -226,7 +226,6 @@ public class ExampleModClient implements ClientModInitializer {
         WAIT_CYCLE_DELAY("循环间隔等待中"),
         WAIT_RECONNECT_SUBMENU("等待踢回重连子服菜单"),
         WAIT_MAIN_MENU("等待主菜单"),
-        WAIT_CHAPTER_MENU("等待章节菜单"),
         WAIT_TOWN_LINE_MENU("等待镇线路菜单"),
 
         // --- 防踢与自动传送保护状态 ---
@@ -245,6 +244,7 @@ public class ExampleModClient implements ClientModInitializer {
         WAIT_ARRIVE2_SECOND("到达防踢点(二次定位)"),
         WAIT_BEFORE_SIGN_CLICK("防踢点就位，等待12tick并校准坐标"),
         CLICK_SIGN("右键点击告示牌"),
+        WAIT_GROUP_MENU("等待副本组菜单(A组/B组)"),
         WAIT_COPY_LINE_MENU("等待分线菜单刷新与加载"),
         WAIT_SPECIAL_SUB_MENU("等待子分线菜单刷新"),
         WAIT_ENTER_COPY_CHECK("等待进入副本(超时/菜单检测)"),
@@ -290,9 +290,9 @@ public class ExampleModClient implements ClientModInitializer {
         // --- 深渊挑战 / 深渊奖励自动化 ---
         ABYSS_WAIT_MAIN_MENU("深渊-等待主菜单"),
         ABYSS_WAIT_FUNC_MENU("深渊-等待魔塔副本菜单"),
-        ABYSS_WAIT_ABYSS_MENU("深渊-等待魔塔其他副本菜单"),
+        ABYSS_WAIT_ABYSS_MENU("深渊-等待魔塔副本菜单(深渊挑战/传送到深渊)"),
         ABYSS_TELEPORT_WAIT("深渊-等待传送到深渊"),
-        ABYSS_GOTO_NPC("深渊-飞行前往NPC(0,64,-1)"),
+        ABYSS_GOTO_NPC("深渊-接近深渊NPC"),
         ABYSS_CLICK_NPC("深渊-右键NPC"),
         ABYSS_WAIT_NPC_MENU("深渊-等待NPC菜单"),
         ABYSS_WAIT_NPC_RETRY("深渊-地牢创建频繁，等待重试"),
@@ -384,11 +384,13 @@ public class ExampleModClient implements ClientModInitializer {
     private static int eightCWaitTick = 0;
 
     private static TargetFloor selectedFloor = TargetFloor.F10C;
-    private static String selectedTownLine = "魔塔一区";
+    private static String selectedTownLine = "魔塔镇新线路一";
+    private static String selectedGroup = "A组副本";   // 字面量初始化：GROUP_A 常量声明在下方，直接引用会触发非法前向引用
+    private static CopyGroupMode selectedGroupMode = CopyGroupMode.BOTH;
     private static String selectedCopyLine = "一线";
     private static boolean autoSwitchLine = false;
     private static int townLineStartIndex = 0;
-    private static int townLineEndIndex = 9;
+    private static int townLineEndIndex = 4;   // 5 条镇线：0~4
     private static boolean enableCycleDelay = false;
     private static int cycleDelaySeconds = 0;
     private static int cycleDelayTicks = 0;
@@ -471,10 +473,31 @@ public class ExampleModClient implements ClientModInitializer {
 
     private static final List<String> COPY_LINES_12C = Arrays.asList("一线", "A1", "A2", "A3");
     private static final List<String> COPY_LINES_8C = Arrays.asList("一线", "A1", "A2", "A3", "PVP");
-    private static final List<String> TOWN_LINES_1_TO_10 = Arrays.asList(
-            "魔塔一区", "魔塔二线", "魔塔三线", "魔塔四线", "魔塔五线",
-            "魔塔六线", "魔塔七线", "魔塔八线", "魔塔九线", "魔塔十线"
+    // --- 镇线与副本组：5 条镇线 × A/B 两个副本组 × 4 条分线 = 40 条线路 ---
+    public static final List<String> TOWN_LINES = Arrays.asList(
+            "魔塔镇新线路一", "魔塔镇新线路二", "魔塔镇新线路三", "魔塔镇新线路四", "魔塔镇新线路五"
     );
+    private static final List<String> TOWN_NUMERALS = Arrays.asList("一", "二", "三", "四", "五");
+    private static final String GROUP_A = "A组副本";
+    private static final String GROUP_B = "B组副本";
+
+    /** 副本组跑法：只跑 A / 只跑 B / A+B 都跑 */
+    public enum CopyGroupMode {
+        ONLY_A("只跑A"), ONLY_B("只跑B"), BOTH("A+B都跑");
+
+        private final String desc;
+        CopyGroupMode(String desc) { this.desc = desc; }
+        public String getDesc() { return desc; }
+
+        /** 一轮开始时的默认组 */
+        public String firstGroup() { return this == ONLY_B ? GROUP_B : GROUP_A; }
+
+        /** 同镇线内下一个要跑的组；返回 null 表示该镇线已跑完 */
+        public String nextGroup(String current) {
+            if (this == BOTH && GROUP_A.equals(current)) return GROUP_B;
+            return null;
+        }
+    }
 
     // --- 深渊自动化坐标与常量 ---
     private static final Vec3d ABYSS_NPC_POS = new Vec3d(0, 64, -1);
@@ -523,8 +546,8 @@ public class ExampleModClient implements ClientModInitializer {
 
     public static boolean isWaitingForMenu() {
         return currentState == AutoState.WAIT_MAIN_MENU ||
-               currentState == AutoState.WAIT_CHAPTER_MENU ||
                currentState == AutoState.WAIT_TOWN_LINE_MENU ||
+               currentState == AutoState.WAIT_GROUP_MENU ||
                currentState == AutoState.WAIT_COPY_LINE_MENU ||
                currentState == AutoState.WAIT_SPECIAL_SUB_MENU ||
                currentState == AutoState.WAIT_RECONNECT_SUBMENU;
@@ -546,11 +569,17 @@ public class ExampleModClient implements ClientModInitializer {
         }
     }
 
-    public static void startFullAutomation(TargetFloor floor, int startTownIdx, int endTownIdx, String copyLine, boolean enableAutoSwitch, boolean enableDelay, int delaySeconds) {
+    public static void startFullAutomation(TargetFloor floor, int startTownIdx, int endTownIdx, String copyLine,
+                                           CopyGroupMode groupMode, boolean enableAutoSwitch, boolean enableDelay, int delaySeconds) {
         selectedFloor = floor;
-        townLineStartIndex = Math.max(0, Math.min(startTownIdx, TOWN_LINES_1_TO_10.size() - 1));
-        townLineEndIndex = Math.max(0, Math.min(endTownIdx, TOWN_LINES_1_TO_10.size() - 1));
-        selectedTownLine = TOWN_LINES_1_TO_10.get(townLineStartIndex);
+        townLineStartIndex = Math.max(0, Math.min(startTownIdx, TOWN_LINES.size() - 1));
+        townLineEndIndex = Math.max(0, Math.min(endTownIdx, TOWN_LINES.size() - 1));
+        if (townLineEndIndex < townLineStartIndex) {
+            townLineEndIndex = townLineStartIndex;
+        }
+        selectedTownLine = TOWN_LINES.get(townLineStartIndex);
+        selectedGroupMode = (groupMode == null) ? CopyGroupMode.BOTH : groupMode;
+        selectedGroup = selectedGroupMode.firstGroup();
         selectedCopyLine = copyLine;
         autoSwitchLine = enableAutoSwitch;
         enableCycleDelay = enableDelay;
@@ -619,13 +648,8 @@ public class ExampleModClient implements ClientModInitializer {
     }
 
     private static int getTownIndex(String townLineStr) {
-        String numStr = extractLineNumber(townLineStr);
-        for (int i = 0; i < TOWN_LINES_1_TO_10.size(); i++) {
-            if (extractLineNumber(TOWN_LINES_1_TO_10.get(i)).equals(numStr)) {
-                return i;
-            }
-        }
-        return 0;
+        int idx = TOWN_LINES.indexOf(townLineStr);
+        return idx < 0 ? 0 : idx;
     }
 
     // 方向二:把游戏里的聊天消息 POST 给桥接脚本(127.0.0.1:25590),由脚本转发到 QQ 群
@@ -840,7 +864,7 @@ public class ExampleModClient implements ClientModInitializer {
 
             int screenWidth = client.getWindow().getScaledWidth();
 
-            int statusWidth = 260;
+            int statusWidth = 300;
             int statusX = screenWidth - statusWidth - 5;
             int statusY = 10;
 
@@ -852,7 +876,9 @@ public class ExampleModClient implements ClientModInitializer {
             String townRange = (townLineStartIndex + 1) + "~" + (townLineEndIndex + 1);
             drawContext.drawTextWithShadow(client.textRenderer, Text.literal("镇线: §b" + selectedTownLine + " §8| §f层数: §b" + selectedFloor.name() + " §8| §f范围: §b" + townRange), statusX, statusY + 24, 0xFFFFFF);
 
-            String lineInfo = selectedCopyLine + (autoSwitchLine ? " (抢线开启)" : " (抢线关闭)");
+            String lineInfo = selectedGroup + " §8/ §b" + selectedCopyLine
+                    + (autoSwitchLine ? " §8(抢线开)" : " §8(抢线关)")
+                    + " §8[" + selectedGroupMode.getDesc() + "]";
             drawContext.drawTextWithShadow(client.textRenderer, Text.literal("目标分线: §b" + lineInfo), statusX, statusY + 36, 0xFFFFFF);
 
             int chatWidth = 420;
@@ -1034,7 +1060,7 @@ public class ExampleModClient implements ClientModInitializer {
                 }
             }
 
-            if (currentState == AutoState.WAIT_MAIN_MENU || currentState == AutoState.WAIT_CHAPTER_MENU) {
+            if (currentState == AutoState.WAIT_MAIN_MENU) {
                 if (!(client.currentScreen instanceof ChatScreen)) {
                     menuTimeoutTicks++;
 
@@ -1059,16 +1085,8 @@ public class ExampleModClient implements ClientModInitializer {
             if (isHandlingMenu && activeHandler != null && !activeHandler.slots.isEmpty()) {
                 switch (currentState) {
                     case WAIT_MAIN_MENU:
+                        // 新线路：/menu -> 含"魔塔"的主菜单 -> 直接进镇线选择（已无"魔塔第一章"）
                         if (clickSlotByKeyword(activeHandler, client, "魔塔")) {
-                            menuRetryCount = 0;
-                            switchState(client, AutoState.WAIT_CHAPTER_MENU);
-                            menuTimeoutTicks = 0;
-                            delayTicks = CLICK_DELAY;
-                        }
-                        break;
-
-                    case WAIT_CHAPTER_MENU:
-                        if (clickSlotByKeyword(activeHandler, client, "魔塔第一章")) {
                             menuRetryCount = 0;
                             switchState(client, AutoState.WAIT_TOWN_LINE_MENU);
                             lineCheckRetryCount = 0;
@@ -1080,9 +1098,10 @@ public class ExampleModClient implements ClientModInitializer {
                     case WAIT_TOWN_LINE_MENU:
                         boolean lineClicked = clickSlotByKeyword(activeHandler, client, selectedTownLine);
                         if (!lineClicked) {
-                            String numPart = extractLineNumber(selectedTownLine);
-                            if (!numPart.isEmpty()) {
-                                String[] fallbackKeywords = new String[]{ "魔塔" + numPart, "魔塔 " + numPart, numPart + "线", numPart + "区" };
+                            int townIdx = getTownIndex(selectedTownLine);
+                            String numeral = (townIdx >= 0 && townIdx < TOWN_NUMERALS.size()) ? TOWN_NUMERALS.get(townIdx) : "";
+                            if (!numeral.isEmpty()) {
+                                String[] fallbackKeywords = new String[]{ "新线路" + numeral, "线路" + numeral, numeral };
                                 for (String kw : fallbackKeywords) {
                                     if (clickSlotByKeyword(activeHandler, client, kw)) {
                                         lineClicked = true;
@@ -1110,6 +1129,25 @@ public class ExampleModClient implements ClientModInitializer {
                             }
                         }
                         break;
+
+                    case WAIT_GROUP_MENU: {
+                        menuWaitTimeoutTicks++;
+                        if (menuWaitTimeoutTicks > 80) {
+                            menuWaitTimeoutTicks = 0;
+                            client.player.sendMessage(Text.literal("§c[魔塔助手] 副本组菜单超时（未找到 [" + selectedGroup + "]），跳过并切入下一循环！"), false);
+                            if (client.currentScreen != null) client.setScreen(null);
+                            skipCurrentAndAdvanceNext(client);
+                            return;
+                        }
+                        if (selectCopyGroup(client, activeHandler)) {
+                            menuWaitTimeoutTicks = 0;
+                            lineCheckRetryCount = 0;
+                            client.player.sendMessage(Text.literal("§a[魔塔助手] 已进入 [" + selectedGroup + "]，等待分线菜单..."), false);
+                            switchState(client, AutoState.WAIT_COPY_LINE_MENU);
+                            delayTicks = CLICK_DELAY;
+                        }
+                        break;
+                    }
 
                     case WAIT_COPY_LINE_MENU:
                     case WAIT_SPECIAL_SUB_MENU:
@@ -1336,7 +1374,7 @@ public class ExampleModClient implements ClientModInitializer {
                     copyEnterCheckTicks++;
 
                     if (client.player.currentScreenHandler != null && !client.player.currentScreenHandler.slots.isEmpty()) {
-                        switchState(client, selectedFloor.isSpecialMenu() ? AutoState.WAIT_SPECIAL_SUB_MENU : AutoState.WAIT_COPY_LINE_MENU);
+                        switchState(client, selectedFloor.isSpecialMenu() ? AutoState.WAIT_SPECIAL_SUB_MENU : AutoState.WAIT_GROUP_MENU);
                         copyEnterCheckTicks = 0;
                         menuWaitTimeoutTicks = 0;
                         signRetryCount = 0;
@@ -1658,21 +1696,37 @@ public class ExampleModClient implements ClientModInitializer {
         List<String> copyLines = getActiveCopyLines();
         int copyIndex = copyLines.indexOf(selectedCopyLine);
 
+        // 1) 同组内推进下一条分线
         if (copyIndex != -1 && copyIndex < copyLines.size() - 1) {
             selectedCopyLine = copyLines.get(copyIndex + 1);
-            client.player.sendMessage(Text.literal("§e[循环系统] 跳过当前，推进至同镇线下一分线: §b" + selectedCopyLine), false);
+            client.player.sendMessage(Text.literal("§e[循环系统] 跳过当前，推进至同组下一分线: §b"
+                    + selectedGroup + " §8- §b" + selectedCopyLine), false);
             startMenuSequence();
             return;
         }
 
+        // 2) 组内 4 条分线跑完 → 换副本组（A → B）
+        String nextGroup = selectedGroupMode.nextGroup(selectedGroup);
+        if (nextGroup != null) {
+            selectedGroup = nextGroup;
+            selectedCopyLine = "一线";
+            client.player.sendMessage(Text.literal("§e[循环系统] 推进至下一副本组: §b"
+                    + selectedTownLine + " §8- §b" + selectedGroup), false);
+            startMenuSequence();
+            return;
+        }
+
+        // 3) 该镇线的副本组跑完 → 下一镇线
         selectedCopyLine = "一线";
+        selectedGroup = selectedGroupMode.firstGroup();
         int currentTownIndex = getTownIndex(selectedTownLine);
         boolean rangeWrapped = (currentTownIndex == townLineEndIndex);
         int nextTownIndex = rangeWrapped
                 ? townLineStartIndex
-                : (currentTownIndex + 1) % TOWN_LINES_1_TO_10.size();
-        selectedTownLine = TOWN_LINES_1_TO_10.get(nextTownIndex);
-        client.player.sendMessage(Text.literal("§e[循环系统] 推进至下一镇线: §b" + selectedTownLine), false);
+                : (currentTownIndex + 1) % TOWN_LINES.size();
+        selectedTownLine = TOWN_LINES.get(nextTownIndex);
+        client.player.sendMessage(Text.literal("§e[循环系统] 推进至下一镇线: §b"
+                + selectedTownLine + " §8- §b" + selectedGroup), false);
 
         if (enableCycleDelay && cycleDelaySeconds > 0 && rangeWrapped) {
             cycleDelayTicks = cycleDelaySeconds * 20;
@@ -1925,11 +1979,12 @@ public class ExampleModClient implements ClientModInitializer {
             if (slotIdx >= 0 && slotIdx < handler.slots.size()) {
                 ItemStack stack = handler.getSlot(slotIdx).getStack();
                 if (!stack.isEmpty()) {
-                    client.player.sendMessage(Text.literal("§a[魔塔助手] 已选中 " + selectedFloor.getFloorNameCN() + "，正在打开分线菜单..."), false);
+                    client.player.sendMessage(Text.literal("§a[魔塔助手] 已选中 " + selectedFloor.getFloorNameCN() + "，正在打开副本组菜单..."), false);
                     client.interactionManager.clickSlot(handler.syncId, slotIdx, 0, SlotActionType.PICKUP, client.player);
 
-                    switchState(client, AutoState.WAIT_COPY_LINE_MENU);
+                    switchState(client, AutoState.WAIT_GROUP_MENU);
                     lineCheckRetryCount = 0;
+                    menuWaitTimeoutTicks = 0;
                     isWaitingForServerLore = false;
 
                     initCheckOrderList();
@@ -2181,9 +2236,11 @@ public class ExampleModClient implements ClientModInitializer {
         return false;
     }
 
-    private static String extractLineNumber(String townLineStr) {
-        if (townLineStr == null) return "";
-        return townLineStr.replaceAll("[魔塔传送服务器线区]", "").trim();
+    /** 在"副本组"菜单里点击 A组/B组；点到了返回 true（10c~15c、8c 都有这一层）。 */
+    private static boolean selectCopyGroup(MinecraftClient client, ScreenHandler handler) {
+        if (clickSlotByKeyword(handler, client, selectedGroup)) return true;
+        String alias = GROUP_B.equals(selectedGroup) ? "B组" : "A组";
+        return clickSlotByKeyword(handler, client, alias);
     }
 
     // ============================================================
@@ -2382,12 +2439,16 @@ public class ExampleModClient implements ClientModInitializer {
         Vec3d playerPos = client.player.getPos();
 
         switch (currentState) {
-            // ---------- 共用前置：主菜单 -> 功能性 -> 深渊与矿坑 -> 传送到深渊 ----------
+            // ---------- 共用前置：主菜单 -> 魔塔副本 ->（挑战：深渊挑战，直达场景）----------
             case ABYSS_WAIT_MAIN_MENU:
                 abyssStepTick++;
                 if (abyssStepTick < 15) break;
                 if (handler != null && clickSlotByKeyword(handler, client, "魔塔副本")) {
-                    abyssTo(client, AutoState.ABYSS_WAIT_FUNC_MENU);
+                    // 挑战：点完"魔塔副本"同一层就有"深渊挑战"，直达场景；
+                    // 奖励：暂时保留老路径（魔塔其他副本 -> 传送到深渊），等确认后再改
+                    abyssTo(client, abyssRewardMode
+                            ? AutoState.ABYSS_WAIT_FUNC_MENU
+                            : AutoState.ABYSS_WAIT_ABYSS_MENU);
                 } else if (abyssStepTick > ABYSS_MENU_TIMEOUT) {
                     abyssStepTick = 0;
                     client.player.networkHandler.sendChatMessage("/menu");
@@ -2405,16 +2466,18 @@ public class ExampleModClient implements ClientModInitializer {
                 }
                 break;
 
-            case ABYSS_WAIT_ABYSS_MENU:
+            case ABYSS_WAIT_ABYSS_MENU: {
                 abyssStepTick++;
                 if (abyssStepTick < 15) break;
-                if (handler != null && clickSlotByKeyword(handler, client, "传送到深渊")) {
+                String entryKeyword = abyssRewardMode ? "传送到深渊" : "深渊挑战";
+                if (handler != null && clickSlotByKeyword(handler, client, entryKeyword)) {
                     abyssTo(client, AutoState.ABYSS_TELEPORT_WAIT);
                 } else if (abyssStepTick > ABYSS_MENU_TIMEOUT) {
                     abyssStepTick = 0;
                     client.player.networkHandler.sendChatMessage("/menu");
                 }
                 break;
+            }
 
             case ABYSS_TELEPORT_WAIT:
                 // 等待世界切换加载完毕（菜单关闭 + 缓冲）
@@ -2425,7 +2488,7 @@ public class ExampleModClient implements ClientModInitializer {
                 break;
 
             case ABYSS_GOTO_NPC:
-                handleAbyssMove(client, ABYSS_NPC_POS, true, AutoState.ABYSS_CLICK_NPC);
+                handleAbyssApproachNpc(client);
                 break;
 
             case ABYSS_CLICK_NPC:
@@ -2641,8 +2704,43 @@ public class ExampleModClient implements ClientModInitializer {
         }
     }
 
-    /** 发 goto 命令并在到达后切状态；fly=true 飞行、false 走路。 */
-    private static void handleAbyssMove(MinecraftClient client, Vec3d target, boolean fly, AutoState next) {
+    /**
+     * 接近深渊 NPC。
+     * 挑战模式：点完「深渊挑战」已经直达场景，NPC 在场景内且坐标不固定，按实体实时位置接近；
+     * 奖励模式：仍是老枢纽里的固定 NPC(0,64,-1)。
+     */
+    private static void handleAbyssApproachNpc(MinecraftClient client) {
+        if (abyssRewardMode) {
+            handleAbyssMove(client, ABYSS_NPC_POS, true, AutoState.ABYSS_CLICK_NPC);
+            return;
+        }
+
+        Entity npc = findAbyssNpc(client);
+        if (npc == null) {
+            abyssStepTick++;
+            if (abyssStepTick > 100) {
+                abyssTo(client, AutoState.ABYSS_CLICK_NPC);   // 找不到也点一次，至少输出附近实体调试信息
+            }
+            return;
+        }
+
+        // 已经在伸手可及的范围：直接点，别飞过头
+        if (client.player.squaredDistanceTo(npc) <= 36.0) {
+            abyssTo(client, AutoState.ABYSS_CLICK_NPC);
+            return;
+        }
+
+        abyssStepTick++;
+        if (abyssStepTick == 1 || abyssStepTick % 15 == 0) {
+            ensureFlying(client);
+            executeWurstCommandDirectly(String.format("goto %.0f %.0f %.0f", npc.getX(), npc.getY(), npc.getZ()));
+        }
+        if (abyssStepTick > ABYSS_GOTO_TIMEOUT) {
+            abyssTo(client, AutoState.ABYSS_CLICK_NPC);
+        }
+    }
+
+    /** 发 goto 命令并在到达后切状态；fly=true 飞行、false 走路。 */    private static void handleAbyssMove(MinecraftClient client, Vec3d target, boolean fly, AutoState next) {
         if (abyssSubStep == 0) {
             if (fly) ensureFlying(client); else disableFlight(client);
             executeWurstCommandDirectly(String.format("goto %.0f %.0f %.0f", target.x, target.y, target.z));
