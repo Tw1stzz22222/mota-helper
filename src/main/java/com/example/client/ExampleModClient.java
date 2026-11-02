@@ -54,6 +54,8 @@ public class ExampleModClient implements ClientModInitializer {
     private static KeyBinding testKeyBinding;
     private static KeyBinding stopKeyBinding;
     private static KeyBinding pauseOrNextKeyBinding;
+    // '=' 的按键状态边沿检测：界面打开时 KeyBinding 收不到按键，需要直接轮询 GLFW
+    private static boolean stopKeyHeldLast = false;
 
     private static final BlockPos DEFAULT_HIGH_FLOOR_SIGN = new BlockPos(-12, 194, -73);
     private static final Vec3d DEFAULT_HIGH_FLOOR_NAV = new Vec3d(-13.0, 193.0, -74.0);
@@ -271,12 +273,16 @@ public class ExampleModClient implements ClientModInitializer {
         WAIT_ARRIVE_10C_BOSS("到达 10c Boss点"),
         WAIT_10C_BOSS_FIGHT("等待 10c Boss 击杀/结算"),
 
+        GOTO_13C_POINT1("13c 寻路 1 (-22,38,-141)"),
+        WAIT_ARRIVE_13C_P1("到达 13c 寻路点 1"),
+        GOTO_13C_POINT2("13c 寻路 2 (-32,38,-92)"),
+        WAIT_ARRIVE_13C_P2("到达 13c 寻路点 2"),
         GOTO_13C_BOSS("前往 13c Boss点"),
         WAIT_ARRIVE_13C_BOSS("到达 13c Boss点"),
         WAIT_13C_BOSS_FIGHT("等待 13c Boss 击杀/结算"),
 
         GOTO_14C_DOOR("14c 导航至门口"),
-        WAIT_14C_DOOR("14c 等待到达门口并缓冲(0.6s)"),
+        WAIT_14C_DOOR("14c 到达门口，关飞行缓冲3s"),
         FLY_14C_FORWARD_15TK("14c 正前方飞行15ticks"),
         FLY_14C_TO_BOSS_RISE_Y25("14c 斜向拉升至Y25并下探Boss点"),
         WAIT_14C_BOSS_FIGHT("等待 14c Boss 击杀/结算"),
@@ -452,6 +458,8 @@ public class ExampleModClient implements ClientModInitializer {
     private static final Vec3d POS_10C_2 = new Vec3d(-162.0, 118.0, -185.0);
     private static final Vec3d BOSS_10C_POS = new Vec3d(-110.0, 211.0, -185.0);
 
+    private static final Vec3d POS_13C_1 = new Vec3d(-22.0, 38.0, -141.0);
+    private static final Vec3d POS_13C_2 = new Vec3d(-32.0, 38.0, -92.0);
     private static final Vec3d BOSS_13C_POS = new Vec3d(43.0, 19.0, 32.0);
 
     private static final Vec3d DOOR_14C_POS = new Vec3d(-91.0, 12.0, -6.0);
@@ -517,6 +525,64 @@ public class ExampleModClient implements ClientModInitializer {
     private static void switchState(MinecraftClient client, AutoState newState) {
         currentState = newState;
         resetFlightKeys(client);
+    }
+
+    /**
+     * '=' 键全停：清空所有模式标志与计数器，关掉 Wurst 的攻击/加速，
+     * 松开所有移动键并回到 IDLE。
+     * 注意：这里【不】主动关飞行 —— 玩家可能正悬在半空，关掉会直接摔死；
+     * 不按键的情况下 Wurst Flight 只是原地悬停，不会继续跑流程。
+     */
+    private static void fullStop(MinecraftClient client) {
+        // 深渊
+        abyssMode = false;
+        abyssRewardMode = false;
+        abyssRewardTerminate = false;
+        abyssFightEnded = false;
+        abyssFrequentNotice = false;
+        abyssStepTick = 0;
+        abyssSubStep = 0;
+        abyssCurrentCycle = 0;
+        abyssPlayerCountStopped = false;
+
+        // 7c
+        sevenCMode = false;
+        sevenCKillDetected = false;
+        sevenCRouteSubStep = 0;
+        sevenCWaypointIndex = 0;
+        sevenCMenuTick = 0;
+        sevenCWaitTick = 0;
+
+        // 8c
+        eightCKillDetected = false;
+        eightCRouteSubStep = 0;
+        eightCWaitTick = 0;
+
+        // 通用计时器
+        delayTicks = 0;
+        cycleDelayTicks = 0;
+        menuRetryCount = 0;
+        flightTimeoutTicks = 0;
+        bossGotoRetryCount = 0;
+        chatWaitTicks = 0;
+        bossSpawnedByChat = false;
+        bossKilledByChat = false;
+        bossKillCount = 0;
+
+        // Wurst 侧：攻击辅助 + 时间加速（飞行保留，见方法注释）
+        disableMultiAura();      // 内部同时关闭 Reach / AutoSword
+        setTimer(false);
+        resetFlightKeys(client);
+
+        if (client.currentScreen != null) {
+            client.setScreen(null);
+        }
+        switchState(client, AutoState.IDLE);
+
+        if (client.player != null) {
+            client.player.sendMessage(Text.literal(
+                    "§c[魔塔助手] 收到 '=' 键信号，已全停：模式与计时清零，MultiAura / Reach / AutoSword / Timer 已关闭。"), false);
+        }
     }
 
     private static void ensureFlying(MinecraftClient client) {
@@ -679,11 +745,14 @@ public class ExampleModClient implements ClientModInitializer {
         }).start();
     }
 
+    // 头目公告里的线路写法：「新一线」~「新五线」为主，兼容旧的「3线」写法
+    private static final Pattern BOSS_LINE_PATTERN = Pattern.compile("(新[一二三四五]|\\d+)线");
+
     // 从头目公告原文中提取 线路 / 层数 / 坐标，压缩成一行短摘要
     private static String extractBossSummary(String msg) {
         StringBuilder sb = new StringBuilder();
 
-        Matcher line = Pattern.compile("(\\d+)线").matcher(msg);
+        Matcher line = BOSS_LINE_PATTERN.matcher(msg);
         if (line.find()) sb.append(line.group(1)).append("线");
 
         Matcher floor = Pattern.compile("F\\s*(\\d+)").matcher(msg);
@@ -928,16 +997,18 @@ public class ExampleModClient implements ClientModInitializer {
                 client.setScreen(new FloorSelectScreen());
             }
 
+            // '=' 全停：KeyBinding 在界面打开时收不到按键（自动化大部分时间都在开界面），
+            // 所以这里直接轮询 GLFW 键状态，再和 KeyBinding 事件取并集，做一次边沿检测。
+            boolean stopHeld = !(client.currentScreen instanceof ChatScreen)
+                    && InputUtil.isKeyPressed(client.getWindow().getHandle(), GLFW.GLFW_KEY_EQUAL);
+            boolean stopEventFired = false;
             while (stopKeyBinding.wasPressed()) {
-                abyssMode = false;
-                abyssRewardMode = false;
-                abyssRewardTerminate = false;
-                abyssFightEnded = false;
-                sevenCMode = false;
-                disableMultiAura();
-                switchState(client, AutoState.IDLE);
-                client.player.sendMessage(Text.literal("§c[魔塔助手] 收到 '=' 键信号，程序已彻底强制停止！"), false);
+                stopEventFired = true;
             }
+            if ((stopHeld && !stopKeyHeldLast) || stopEventFired) {
+                fullStop(client);
+            }
+            stopKeyHeldLast = stopHeld;
 
             while (pauseOrNextKeyBinding.wasPressed()) {
                 if (sevenCMode) {
@@ -1182,7 +1253,9 @@ public class ExampleModClient implements ClientModInitializer {
                                 bossSpawnedByChat = false; bossKilledByChat = false;
                                 client.player.sendMessage(Text.literal("§a[魔塔助手] 已成功进入 12c " + selectedCopyLine + "！"), false);
                             } else if (selectedFloor == TargetFloor.F13C) {
-                                delayTicks = 40; switchState(client, AutoState.GOTO_13C_BOSS);
+                                delayTicks = 40; switchState(client, AutoState.GOTO_13C_POINT1);
+                                flightTimeoutTicks = 0;
+                                client.player.sendMessage(Text.literal("§a[魔塔助手] 已成功进入 13c " + selectedCopyLine + "！"), false);
                             } else if (selectedFloor == TargetFloor.F14C) {
                                 delayTicks = 20; switchState(client, AutoState.GOTO_14C_DOOR);
                                 flightTimeoutTicks = 0; chatWaitTicks = 0; fly14cTickCount = 0;
@@ -1466,6 +1539,22 @@ public class ExampleModClient implements ClientModInitializer {
                 else if (currentState == AutoState.WAIT_10C_BOSS_FIGHT) {
                     handleSingleBossFightWait(client, "10c");
                 }
+                else if (currentState == AutoState.GOTO_13C_POINT1) {
+                    executeWurstCommandDirectly("goto -22 38 -141");
+                    switchState(client, AutoState.WAIT_ARRIVE_13C_P1);
+                    flightTimeoutTicks = 0;
+                }
+                else if (currentState == AutoState.WAIT_ARRIVE_13C_P1) {
+                    handleBossGotoArrival(client, playerPos, POS_13C_1, AutoState.GOTO_13C_POINT2, "goto -22 38 -141", 5);
+                }
+                else if (currentState == AutoState.GOTO_13C_POINT2) {
+                    executeWurstCommandDirectly("goto -32 38 -92");
+                    switchState(client, AutoState.WAIT_ARRIVE_13C_P2);
+                    flightTimeoutTicks = 0;
+                }
+                else if (currentState == AutoState.WAIT_ARRIVE_13C_P2) {
+                    handleBossGotoArrival(client, playerPos, POS_13C_2, AutoState.GOTO_13C_BOSS, "goto -32 38 -92", 5);
+                }
                 else if (currentState == AutoState.GOTO_13C_BOSS) {
                     executeWurstCommandDirectly("goto 43 19 32");
                     switchState(client, AutoState.WAIT_ARRIVE_13C_BOSS);
@@ -1495,7 +1584,10 @@ public class ExampleModClient implements ClientModInitializer {
                     flightTimeoutTicks++;
                     if (isArrived(playerPos, DOOR_14C_POS, ARRIVE_DISTANCE) || flightTimeoutTicks > 200) {
                         resetFlightKeys(client);
-                        delayTicks = 12;
+                        // 到门口先彻底关飞行（Wurst Flight + 原版飞行能力），让角色自然落地，
+                        // 静止 3 秒后再由 FLY_14C_FORWARD_15TK 的 ensureFlying 重新打开
+                        disableFlight(client);
+                        delayTicks = 60;   // 3 秒（20 tick = 1s）
                         switchState(client, AutoState.FLY_14C_FORWARD_15TK);
                         fly14cTickCount = 0;
                     }
